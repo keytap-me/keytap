@@ -74,6 +74,7 @@ type notificationSummary struct {
 	Host    string `json:"host"`
 	User    string `json:"user"`
 	Command string `json:"cmd"`
+	Note    string `json:"note,omitempty"`
 	Expires int64  `json:"exp"`
 }
 
@@ -83,7 +84,7 @@ func sealSummary(key []byte, req *Request) (string, error) {
 		cmd = cmd[:160] + "…"
 	}
 	plain, _ := json.Marshal(notificationSummary{V: 1, ID: req.ID, Kind: req.Kind, Code: req.Code, Host: req.Host,
-		User: req.User, Command: cmd, Expires: req.ExpiresAt.Unix()})
+		User: req.User, Command: cmd, Note: truncateRunes(req.Note, maxPushNote), Expires: req.ExpiresAt.Unix()})
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return "", err

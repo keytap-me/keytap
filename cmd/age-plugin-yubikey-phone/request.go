@@ -62,6 +62,7 @@ type Request struct {
 	User       string     `json:"user"`
 	Command    string     `json:"command"` // the process that asked for the decrypt (sops / age …)
 	Cwd        string     `json:"cwd"`
+	Note       string     `json:"note,omitempty"` // free text from whoever started the decrypt (KEYTAP_NOTE); not verified
 	Identities []Identity `json:"identities"`
 	Files      []File     `json:"files"`
 }
@@ -156,4 +157,47 @@ func displayCode(id []byte) string {
 	sum := sha256.Sum256(id)
 	c := base32.StdEncoding.EncodeToString(sum[:])[:6]
 	return c[:3] + "-" + c[3:]
+}
+
+// The note: a short free-text line from whoever started the decrypt — a person typing why, or an
+// automation describing what it is about to do. Set KEYTAP_NOTE in the environment of sops / age
+// (age starts the plugin with that environment); `test --note` sets it for a dry run. It is shown on
+// the phone above everything else, labelled as the requester's own words: it explains, it does not
+// authorise anything — the code, the command and the key still decide.
+const (
+	maxNote     = 500 // runes
+	maxPushNote = 200 // runes in the encrypted notification summary (APNs payload limit)
+)
+
+// cleanNote drops control characters (keeping single line breaks, at most 4 lines), trims, and caps
+// the length.
+func cleanNote(s string) string {
+	var b strings.Builder
+	lines := 0
+	for _, r := range strings.TrimSpace(s) {
+		switch {
+		case r == '\n':
+			if lines < 3 {
+				b.WriteRune('\n')
+			} else {
+				b.WriteRune(' ')
+			}
+			lines++
+		case r == '\t':
+			b.WriteRune(' ')
+		case r < 0x20 || r == 0x7f || (r >= 0x80 && r < 0xa0) || r == 0x2028 || r == 0x2029 || (r >= 0x202a && r <= 0x202e) || (r >= 0x2066 && r <= 0x2069):
+			// control, line/paragraph separators, bidi overrides (they can make text read differently)
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return truncateRunes(strings.TrimSpace(b.String()), maxNote)
+}
+
+func truncateRunes(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return strings.TrimSpace(string(r[:n-1])) + "…"
 }

@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"strings"
 	"testing"
 )
 
@@ -65,3 +66,22 @@ func TestAnswerSignature(t *testing.T) {
 }
 
 func stringsToUpper(s string) string { return string(bytes.ToUpper([]byte(s))) }
+
+func TestCleanNote(t *testing.T) {
+	cases := map[string]string{
+		"  rotate the staging password  ": "rotate the staging password",
+		"a\tb\x00c\x1b[31md":              "a bc[31md",
+		"evil‮dcba":                       "evildcba",
+		"1\n2\n3\n4\n5":                   "1\n2\n3\n4 5",
+		"":                                "",
+	}
+	for in, want := range cases {
+		if got := cleanNote(in); got != want {
+			t.Errorf("cleanNote(%q) = %q, want %q", in, got, want)
+		}
+	}
+	long := strings.Repeat("ä", 600)
+	if got := []rune(cleanNote(long)); len(got) != maxNote || got[len(got)-1] != '…' {
+		t.Errorf("long note: %d runes", len(got))
+	}
+}

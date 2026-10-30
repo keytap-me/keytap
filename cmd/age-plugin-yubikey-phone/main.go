@@ -6,8 +6,11 @@
 //
 //	age-plugin-yubikey-phone --age-plugin=identity-v1   decrypt (what age / sops run)
 //	age-plugin-yubikey-phone pair --host IP [--port 8743] [--recipient age1yubikey1…]
-//	age-plugin-yubikey-phone test [--serial N]   dry run through the phone: PIN + tap + ECDH, nothing decrypted
+//	age-plugin-yubikey-phone test [--serial N] [--note TEXT]   dry run through the phone: PIN + tap + ECDH, nothing decrypted
 //	age-plugin-yubikey-phone devices | unpair NAME | version
+//
+// KEYTAP_NOTE="…" in the environment of a decrypt (e.g. `KEYTAP_NOTE="rotate the db password" sops -d f`)
+// is shown at the top of the request on the phone: the requester's own words, not verified.
 //
 // Encryption (recipient-v1) and every other age-plugin-yubikey command need no YubiKey
 // secret and are handed to the real plugin unchanged.

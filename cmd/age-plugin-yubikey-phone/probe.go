@@ -16,6 +16,7 @@ import (
 	"encoding/base64"
 	"flag"
 	"fmt"
+	"os"
 )
 
 const probeLabel = "keytap-probe-v1"
@@ -23,6 +24,7 @@ const probeLabel = "keytap-probe-v1"
 func runTest(args []string) error {
 	fs := flag.NewFlagSet("test", flag.ExitOnError)
 	serial := fs.Uint("serial", 0, "which registered YubiKey to test (default: the first)")
+	note := fs.String("note", os.Getenv("KEYTAP_NOTE"), "a short note shown on the phone (default: $KEYTAP_NOTE)")
 	fs.Parse(args)
 
 	cfg, err := loadConfig()
@@ -57,6 +59,7 @@ func runTest(args []string) error {
 	}
 
 	req := &Request{
+		Note:    cleanNote(*note),
 		Version: protoVersion,
 		Kind:    "test",
 		Probe: &Probe{

@@ -25,7 +25,7 @@ import (
 const (
 	identityHRP  = "age-plugin-yubikey-"
 	stanzaTag    = "piv-p256"
-	requestTTL   = 120 * time.Second
+	requestTTL   = 300 * time.Second
 	protoVersion = 1
 )
 
@@ -245,6 +245,9 @@ func askPhone(c *ageConn, cfg *Config, req *Request, check func(*Answer) error) 
 	req.Host = cfg.displayName()
 	req.User = os.Getenv("USER")
 	req.Command, req.Cwd = requester()
+	if req.Note == "" {
+		req.Note = cleanNote(os.Getenv("KEYTAP_NOTE"))
+	}
 
 	cert, _, err := loadOrCreateCert()
 	if err != nil {

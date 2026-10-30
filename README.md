@@ -28,7 +28,7 @@ operation; the YubiKey still does the key agreement and still asks for its PIN a
   phone creates a P-256 key in its Secure Enclave and registers it; every answer is signed with it,
   bound to the SHA-256 of the exact request bytes the phone displayed and to a one-time nonce.
 - **Small exposure.** The bridge listens only while a decrypt waits, only on the address given to
-  `pair --host`, and every request expires after 120 seconds.
+  `pair --host`, and every request expires after 300 seconds (five minutes).
 - **Only the file key travels back.** The phone unwraps the 16-byte age file key and returns that,
   over TLS 1.3 to the pinned certificate. File contents never leave the computer.
 - **Registered keys only.** Pairing registers the YubiKeys you tap. `sops` starts the plugin once
@@ -85,9 +85,15 @@ age-plugin-yubikey-phone pair --host <IP of this computer>   # prints a keytap:/
                                                               # tap your YubiKey(s) to register them
 age-plugin-yubikey-phone test                                 # dry run: PIN + tap + key agreement, nothing decrypted
 sops -d secrets.enc.yaml                                      # approve on the phone (keep KeyTap open)
+KEYTAP_NOTE="renewing the staging certs" sops -d secrets.enc.yaml   # with a note shown at the top of the request
 age-plugin-yubikey-phone devices                              # paired phones and their YubiKeys
 age-plugin-yubikey-phone unpair "<phone name>"
 ```
+
+The note is optional free text (up to 500 characters, control characters removed) from whoever
+starts the decrypt: a person explaining why, or a script describing what it is about to do. The
+phone shows it first, as the requester's own words. It explains; it authorises nothing — the code,
+the command and the key still decide. `test --note "…"` sets it for a dry run.
 
 State lives in `~/.secure/keytap/` (`KEYTAP_DIR` overrides): the bridge certificate, the paired
 devices and a log of request metadata — never a file key.
