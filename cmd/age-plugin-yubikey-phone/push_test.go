@@ -32,7 +32,7 @@ func TestPushIsEndToEndEncryptedAndCleared(t *testing.T) {
 	push := newPushConfig(&pushSettings{Token: strings.Repeat("ab", 32), Env: "sandbox"})
 	cfg := &Config{Devices: []Device{{Name: "phone", Push: push}, {Name: "no-push"}}}
 	req := &Request{ID: "req-1", Code: "ABC-DEF", Host: "workstation", User: "demo",
-		Command: "sops -d secrets/production.enc.yaml", ExpiresAt: time.Now().Add(2 * time.Minute)}
+		Command: "sops -d secrets/production.enc.yaml", Note: "rotate the db password", ExpiresAt: time.Now().Add(2 * time.Minute)}
 
 	pn := notifyPhones(cfg, req)
 	pn.clear()
@@ -57,9 +57,15 @@ func TestPushIsEndToEndEncryptedAndCleared(t *testing.T) {
 	if err != nil {
 		t.Fatalf("phone could not decrypt: %v", err)
 	}
+	// Even encrypted, a push carries no request details: only that something waits, and until when.
+	for _, detail := range []string{"sops", "production", "workstation", "demo", "ABC-DEF", "rotate"} {
+		if strings.Contains(string(plain), detail) {
+			t.Errorf("the push summary contains %q: %s", detail, plain)
+		}
+	}
 	var sum notificationSummary
 	json.Unmarshal(plain, &sum)
-	if sum.Code != "ABC-DEF" || sum.Host != "workstation" || sum.Command != req.Command {
+	if sum.V != 2 || sum.ID != "req-1" || sum.Expires != req.ExpiresAt.Unix() {
 		t.Errorf("summary: %+v", sum)
 	}
 	if _, err := gcm.Open(nil, sealed[:12], sealed[12:], []byte("other-request")); err == nil {

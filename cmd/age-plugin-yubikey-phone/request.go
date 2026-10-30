@@ -161,12 +161,9 @@ func displayCode(id []byte) string {
 
 // The note: a short free-text line from whoever started the decrypt, e.g. why it is needed. Set KEYTAP_NOTE in the environment of sops / age
 // (age starts the plugin with that environment); `test --note` sets it for a dry run. It is shown on
-// the phone above everything else, labelled as the requester's own words: it explains, it does not
+// the phone above everything else (never in a notification), labelled as the requester's own words: it explains, it does not
 // authorise anything — the code, the command and the key still decide.
-const (
-	maxNote     = 500 // runes
-	maxPushNote = 200 // runes in the encrypted notification summary (APNs payload limit)
-)
+const maxNote = 500 // runes
 
 // cleanNote drops control characters (keeping single line breaks, at most 4 lines), trims, and caps
 // the length.

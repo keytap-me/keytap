@@ -4,10 +4,12 @@ package main
 // (push.keytap.me unless configured otherwise) to wake the paired phone through Apple's push
 // service, and to remove the notification again when the request is answered or expires.
 //
-// The relay and Apple see the phone's push token, the time, the random request id and ciphertext:
-// the summary (computer, user, command, code, expiry) is AES-256-GCM-encrypted under a key that
-// only this bridge and the phone hold (created when notifications are switched on), with the
-// request id as additional data. Without a phone that opted in, nothing is sent anywhere.
+// A push carries NO request details — not the computer, user, command, file, code or note. It says
+// only that a request (or a dry run) is waiting and when it expires; everything else is read in the
+// app over the direct connection. The relay and Apple see the phone's push token, the time, the
+// random request id and that small summary, AES-256-GCM-encrypted under a key that only this bridge
+// and the phone hold (created when notifications are switched on), with the request id as additional
+// data. Without a phone that opted in, nothing is sent anywhere.
 
 import (
 	"bytes"
@@ -65,26 +67,17 @@ func (c *Config) pushRelay() string {
 	return defaultPushRelay
 }
 
-// notificationSummary is what the phone shows in the notification once it has decrypted it.
+// notificationSummary is everything a push says: that something waits, and until when. Keep it free
+// of request details — a notification is shown on the lock screen and travels through Apple.
 type notificationSummary struct {
 	V       int    `json:"v"`
 	ID      string `json:"id"`
 	Kind    string `json:"kind,omitempty"`
-	Code    string `json:"code"`
-	Host    string `json:"host"`
-	User    string `json:"user"`
-	Command string `json:"cmd"`
-	Note    string `json:"note,omitempty"`
 	Expires int64  `json:"exp"`
 }
 
 func sealSummary(key []byte, req *Request) (string, error) {
-	cmd := req.Command
-	if len(cmd) > 160 {
-		cmd = cmd[:160] + "…"
-	}
-	plain, _ := json.Marshal(notificationSummary{V: 1, ID: req.ID, Kind: req.Kind, Code: req.Code, Host: req.Host,
-		User: req.User, Command: cmd, Note: truncateRunes(req.Note, maxPushNote), Expires: req.ExpiresAt.Unix()})
+	plain, _ := json.Marshal(notificationSummary{V: 2, ID: req.ID, Kind: req.Kind, Expires: req.ExpiresAt.Unix()})
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return "", err

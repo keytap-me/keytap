@@ -48,9 +48,10 @@ Off by default. A user can switch them on in the app; the phone then gives its c
 push token, and while a decrypt waits the bridge asks a relay to wake the phone. The relay
 (`cmd/keytap-push-relay`, run by us at push.keytap.me; `pair --push-relay` points a bridge at your
 own) forwards to Apple Push Notification service and stores nothing. It sees the push token, the
-time, a random request id and ciphertext: the summary shown in the notification is AES-256-GCM
-encrypted under a key only the bridge and the phone share (the request id is authenticated data),
-and decrypted on the phone. The notification disappears after the answer or the expiry.
+time, a random request id and ciphertext. A push carries no request details at all — no computer,
+user, command, file, code or note — only that a request (or a dry run) is waiting and when it
+expires, AES-256-GCM encrypted under a key only the bridge and the phone share (the request id is
+authenticated data). The details are read in the app, over the direct connection. The notification disappears after the answer or the expiry.
 iOS lets only an app on screen read NFC, so tapping the notification opens KeyTap on the request.
 
 ## Install
