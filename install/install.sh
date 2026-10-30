@@ -1,8 +1,8 @@
 #!/bin/sh
 # KeyTap bridge installer for macOS and Linux — https://keytap.me/install
 #
-#   curl -fsSL https://keytap.me/install.sh | sh                 # install the bridge
-#   curl -fsSL https://keytap.me/install.sh | sh -s -- --shim    # … and route age's YubiKey plugin through it
+#   curl -fsSL https://keytap.me/get | sh                 # install the bridge
+#   curl -fsSL https://keytap.me/get | sh -s -- --shim    # … and route age's YubiKey plugin through it
 #
 # Downloads age-plugin-yubikey-phone from the latest GitHub release of keytap-me/keytap, verifies
 # it against the release's SHA256SUMS and installs it into ~/.local/bin (KEYTAP_BIN overrides,

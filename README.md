@@ -49,7 +49,7 @@ Prerequisites: [`age`](https://github.com/FiloSottile/age) and
 
 ```sh
 # macOS / Linux — downloads the latest release, verifies SHA256SUMS, installs to ~/.local/bin
-curl -fsSL https://keytap.me/install.sh | sh -s -- --shim
+curl -fsSL https://keytap.me/get | sh -s -- --shim
 
 # Windows (PowerShell) — installs to %LOCALAPPDATA%\KeyTap\bin and puts it first on your PATH
 & ([scriptblock]::Create((irm https://keytap.me/install.ps1))) -Shim
