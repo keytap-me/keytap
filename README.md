@@ -22,8 +22,8 @@ operation; the YubiKey still does the key agreement and still asks for its PIN a
 - **Key, PIN and presence stay required.** The private key never leaves the YubiKey. The PIN is
   entered on the phone, goes only to the YubiKey (PIV VERIFY) and is never stored. The tap is the touch.
 - **No server.** The phone talks to exactly one peer: your computer, directly over your network or
-  your own VPN. There is no KeyTap service, account or cloud. No push notifications either — a push
-  travels through Apple's servers and would reveal when and from where you decrypt.
+  your own VPN. There is no KeyTap service in the trust path, no account and no cloud. Notifications
+  are optional and off by default; switched on, they are end-to-end encrypted (see below).
 - **Pinned and paired.** `pair` creates a self-signed certificate; the phone pins its SHA-256. The
   phone creates a P-256 key in its Secure Enclave and registers it; every answer is signed with it,
   bound to the SHA-256 of the exact request bytes the phone displayed and to a one-time nonce.
