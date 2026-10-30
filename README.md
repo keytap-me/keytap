@@ -59,7 +59,8 @@ go install github.com/keytap-me/keytap/cmd/age-plugin-yubikey-phone@latest
 ```
 
 Release binaries and `SHA256SUMS` are on the [releases page](https://github.com/keytap-me/keytap/releases),
-with build provenance attestations (`gh attestation verify <file> --repo keytap-me/keytap`).
+with build provenance attestations for the downloaded archives
+(`gh attestation verify age-plugin-yubikey-phone-<os>-<arch>.tar.gz --repo keytap-me/keytap`).
 
 **The shim.** `--shim` / `-Shim` installs the bridge a second time under the name
 `age-plugin-yubikey`, ahead of the real plugin on your PATH, so `age` and `sops` ask the phone.
