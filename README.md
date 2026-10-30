@@ -42,6 +42,17 @@ The stanza handling follows `age-plugin-yubikey`'s `piv-p256` format: tag = SHA-
 recipient)[0..4]; shared secret = ECDH on the YubiKey (retired PIV slot); wrap key =
 HKDF-SHA256(shared, epk ‖ recipient, "piv-p256"); file key = ChaCha20-Poly1305 with a zero nonce.
 
+## Optional notifications
+
+Off by default. A user can switch them on in the app; the phone then gives its computer its Apple
+push token, and while a decrypt waits the bridge asks a relay to wake the phone. The relay
+(`cmd/keytap-push-relay`, run by us at push.keytap.me; `pair --push-relay` points a bridge at your
+own) forwards to Apple Push Notification service and stores nothing. It sees the push token, the
+time, a random request id and ciphertext: the summary shown in the notification is AES-256-GCM
+encrypted under a key only the bridge and the phone share (the request id is authenticated data),
+and decrypted on the phone. The notification disappears after the answer or the expiry.
+iOS lets only an app on screen read NFC, so tapping the notification opens KeyTap on the request.
+
 ## Install
 
 Prerequisites: [`age`](https://github.com/FiloSottile/age) and

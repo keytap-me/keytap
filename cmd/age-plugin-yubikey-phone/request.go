@@ -109,6 +109,31 @@ func signedMessage(requestBytes []byte, nonce string, a *Answer) []byte {
 	return []byte(b.String())
 }
 
+// deviceMessage is what the phone signs to change its notification settings.
+// Keep in lockstep with KeyTapCore (BridgeClient.updateDevice).
+func deviceMessage(p *pushSettings) []byte {
+	if p == nil {
+		return []byte("keytap-device-v1\npush off\n")
+	}
+	return []byte("keytap-device-v1\npush " + strings.ToLower(p.Token) + " " + p.Env + "\n")
+}
+
+func verifySigned(dev *Device, msg []byte, signature string) error {
+	x, y := elliptic.Unmarshal(elliptic.P256(), dev.PublicKey) //nolint:staticcheck
+	if x == nil {
+		return errors.New("device public key is not a P-256 point")
+	}
+	sig, err := b64any(signature)
+	if err != nil {
+		return err
+	}
+	digest := sha256.Sum256(msg)
+	if !ecdsa.VerifyASN1(&ecdsa.PublicKey{Curve: elliptic.P256(), X: x, Y: y}, digest[:], sig) {
+		return errors.New("signature does not verify")
+	}
+	return nil
+}
+
 func verifyAnswer(dev *Device, requestBytes []byte, nonce string, a *Answer) error {
 	x, y := elliptic.Unmarshal(elliptic.P256(), dev.PublicKey) //nolint:staticcheck // X9.63 point from the Secure Enclave
 	if x == nil {

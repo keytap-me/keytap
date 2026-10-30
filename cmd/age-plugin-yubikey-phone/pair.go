@@ -33,6 +33,7 @@ type pairBody struct {
 		Slot      uint8  `json:"slot"`
 		Recipient string `json:"recipient"` // base64, 33 bytes compressed
 	} `json:"yubikeys"`
+	Push *pushSettings `json:"push,omitempty"` // optional: notifications through the relay
 }
 
 func runPair(args []string) error {
@@ -41,6 +42,7 @@ func runPair(args []string) error {
 	port := fs.String("port", "", "port (default 8743 or the stored one); the listener binds --host only")
 	recipient := fs.String("recipient", "", "age1yubikey1… recipient to show on the phone (optional, public)")
 	nameFlag := fs.String("name", "", "how the phone shows this computer (default: short hostname)")
+	relayFlag := fs.String("push-relay", "", "notification relay for phones that opt in (default "+defaultPushRelay+")")
 	fs.Parse(args)
 
 	cfg, err := loadConfig()
@@ -69,6 +71,9 @@ func runPair(args []string) error {
 	code := base64.RawURLEncoding.EncodeToString(codeBytes)
 	if *nameFlag != "" {
 		cfg.Name = strings.TrimSpace(*nameFlag)
+	}
+	if *relayFlag != "" {
+		cfg.PushRelay = strings.TrimSpace(*relayFlag)
 	}
 	name := cfg.displayName()
 
@@ -126,9 +131,15 @@ func runPair(args []string) error {
 		if devName == "" || len(devName) > 64 {
 			devName = "iPhone"
 		}
-		paired <- Device{Name: devName, PublicKey: pub, TokenSHA256: sum[:], PairedAt: time.Now().UTC(), Keys: keys}
+		dev := Device{Name: devName, PublicKey: pub, TokenSHA256: sum[:], PairedAt: time.Now().UTC(), Keys: keys}
+		resp := map[string]string{"token": token, "bridge_name": name}
+		if b.Push.valid() {
+			dev.Push = newPushConfig(b.Push)
+			resp["notify_key"] = base64.RawStdEncoding.EncodeToString(dev.Push.NotifyKey)
+		}
+		paired <- dev
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{"token": token, "bridge_name": name})
+		json.NewEncoder(w).Encode(resp)
 	}
 	srv := serve(ln, s.handler())
 	defer srv.Close()
@@ -152,6 +163,9 @@ func runPair(args []string) error {
 		for _, k := range d.Keys {
 			fmt.Printf("  YubiKey %d, slot %#x: %s\n", k.Serial, k.Slot, bech32Encode("age1yubikey", k.Recipient))
 		}
+		if d.Push != nil {
+			fmt.Printf("  Notifications: on, via %s (end-to-end encrypted)\n", cfg.pushRelay())
+		}
 		if len(d.Keys) > 0 {
 			fmt.Println("Next: `age-plugin-yubikey-phone test` runs a dry run through the phone.")
 		}
@@ -174,6 +188,9 @@ func runDevices() error {
 		fmt.Printf("%-24s paired %s  device key %x\n", d.Name, d.PairedAt.Local().Format("2006-01-02 15:04"), sum[:6])
 		for _, k := range d.Keys {
 			fmt.Printf("    YubiKey %d, slot %#x: %s\n", k.Serial, k.Slot, bech32Encode("age1yubikey", k.Recipient))
+		}
+		if d.Push != nil {
+			fmt.Printf("    notifications: on (%s)\n", d.Push.Env)
 		}
 	}
 	return nil

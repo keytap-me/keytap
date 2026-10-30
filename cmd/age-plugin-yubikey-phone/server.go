@@ -9,6 +9,7 @@ package main
 //   POST /v1/pair      one-time pairing code → registers the device key, returns its token (pair mode only)
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -122,6 +123,56 @@ func (s *server) handler() http.Handler {
 		}
 		logf("request %s: answered by %q (declined=%v, results=%d)", p.req.Code, dev.Name, a.Declined, len(a.Results))
 		w.WriteHeader(http.StatusNoContent)
+	})
+	// The paired phone switches notifications on or off whenever the bridge is listening (a pair,
+	// a test or a decrypt): signed by its Secure Enclave key, like every answer.
+	mux.HandleFunc("POST /v1/device", func(w http.ResponseWriter, r *http.Request) {
+		dev := s.device(r)
+		if dev == nil {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		var body struct {
+			Push      *pushSettings `json:"push"`
+			Signature string        `json:"signature"`
+		}
+		if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&body); err != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		if body.Push != nil && !body.Push.valid() {
+			http.Error(w, "bad push settings", http.StatusBadRequest)
+			return
+		}
+		if err := verifySigned(dev, deviceMessage(body.Push), body.Signature); err != nil {
+			http.Error(w, "signature rejected", http.StatusForbidden)
+			return
+		}
+		cfg, err := loadConfig()
+		if err != nil {
+			http.Error(w, "config", http.StatusInternalServerError)
+			return
+		}
+		resp := map[string]string{}
+		for i := range cfg.Devices {
+			if !bytes.Equal(cfg.Devices[i].PublicKey, dev.PublicKey) {
+				continue
+			}
+			if body.Push == nil {
+				cfg.Devices[i].Push = nil
+			} else {
+				cfg.Devices[i].Push = newPushConfig(body.Push)
+				resp["notify_key"] = base64.RawStdEncoding.EncodeToString(cfg.Devices[i].Push.NotifyKey)
+			}
+			dev.Push = cfg.Devices[i].Push
+		}
+		if err := cfg.save(); err != nil {
+			http.Error(w, "config", http.StatusInternalServerError)
+			return
+		}
+		logf("device %q: notifications %s", dev.Name, map[bool]string{true: "on", false: "off"}[body.Push != nil])
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
 	})
 	mux.HandleFunc("POST /v1/pair", func(w http.ResponseWriter, r *http.Request) {
 		if s.pair == nil {

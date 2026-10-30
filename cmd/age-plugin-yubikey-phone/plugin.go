@@ -268,6 +268,9 @@ func askPhone(c *ageConn, cfg *Config, req *Request, check func(*Answer) error) 
 		srv.Shutdown(sctx)
 	}()
 	logf("request %s: waiting (%d file(s), command %q)", req.Code, len(req.Files), req.Command)
+	// Opted-in phones get a notification (end-to-end encrypted); it is cleared on every way out.
+	pn := notifyPhones(cfg, req)
+	defer pn.clear()
 
 	select {
 	case a := <-s.pending.done:

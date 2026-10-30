@@ -29,11 +29,12 @@ import (
 const defaultListen = ":8743"
 
 type Device struct {
-	Name        string    `json:"name"`
-	PublicKey   []byte    `json:"public_key"` // X9.63 uncompressed P-256 point (Secure Enclave)
-	TokenSHA256 []byte    `json:"token_sha256"`
-	PairedAt    time.Time `json:"paired_at"`
-	Keys        []YubiKey `json:"yubikeys"` // the YubiKeys registered with this phone at pairing
+	Name        string      `json:"name"`
+	PublicKey   []byte      `json:"public_key"` // X9.63 uncompressed P-256 point (Secure Enclave)
+	TokenSHA256 []byte      `json:"token_sha256"`
+	PairedAt    time.Time   `json:"paired_at"`
+	Keys        []YubiKey   `json:"yubikeys"`       // the YubiKeys registered with this phone at pairing
+	Push        *PushConfig `json:"push,omitempty"` // set only if the phone opted in to notifications
 }
 
 // YubiKey is a key the phone registered by tapping it during pairing. Only requests for a
@@ -62,9 +63,10 @@ func (c *Config) registeredTags() map[string]bool {
 }
 
 type Config struct {
-	Name    string   `json:"name,omitempty"` // how the phone calls this computer (pair --name)
-	Listen  string   `json:"listen"`
-	Devices []Device `json:"devices"`
+	Name      string   `json:"name,omitempty"`       // how the phone calls this computer (pair --name)
+	PushRelay string   `json:"push_relay,omitempty"` // notification relay (default https://push.keytap.me)
+	Listen    string   `json:"listen"`
+	Devices   []Device `json:"devices"`
 }
 
 // displayName is what the phone shows for this computer: the pair --name, else the short
