@@ -91,8 +91,7 @@ age-plugin-yubikey-phone unpair "<phone name>"
 ```
 
 The note is optional free text (up to 500 characters, control characters removed) from whoever
-starts the decrypt: a person explaining why, or a script describing what it is about to do. The
-phone shows it first, as the requester's own words. It explains; it authorises nothing — the code,
+starts the decrypt, e.g. why it is needed. The phone shows it first, as the requester's own words. It explains; it authorises nothing — the code,
 the command and the key still decide. `test --note "…"` sets it for a dry run.
 
 State lives in `~/.secure/keytap/` (`KEYTAP_DIR` overrides): the bridge certificate, the paired
