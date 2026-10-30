@@ -1,0 +1,49 @@
+# Release: on a version tag, test, cross-compile the bridge for macOS, Linux and Windows, write
+# SHA256SUMS, attest build provenance and publish a GitHub release. First-party actions only,
+# pinned to commit SHAs. The asset names carry no version, so
+# https://github.com/keytap-me/keytap/releases/latest/download/<asset> always points at the newest.
+name: release
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: vet + test
+        run: go vet ./... && go test ./...
+      - name: build
+        run: |
+          set -eu
+          mkdir -p dist
+          for t in darwin/arm64 darwin/amd64 linux/amd64 linux/arm64 windows/amd64 windows/arm64; do
+            os=${t%/*}; arch=${t#*/}; ext=""; [ "$os" = windows ] && ext=.exe
+            d="build/$os-$arch"; mkdir -p "$d"
+            CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -trimpath -ldflags "-s -w -X main.version=$GITHUB_REF_NAME" \
+              -o "$d/age-plugin-yubikey-phone$ext" ./cmd/age-plugin-yubikey-phone
+            cp README.md LICENSE-MIT LICENSE-APACHE "$d/"
+            if [ "$os" = windows ]; then
+              (cd "$d" && zip -q -r "../../dist/age-plugin-yubikey-phone-$os-$arch.zip" .)
+            else
+              tar -C "$d" -czf "dist/age-plugin-yubikey-phone-$os-$arch.tar.gz" .
+            fi
+          done
+          cp install/install.sh install/install.ps1 dist/
+          (cd dist && sha256sum * > SHA256SUMS)
+          cat dist/SHA256SUMS
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: "dist/*"
+      - name: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --title "$GITHUB_REF_NAME" --generate-notes
