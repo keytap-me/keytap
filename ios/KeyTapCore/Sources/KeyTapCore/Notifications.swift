@@ -13,6 +13,7 @@ public struct NotificationSummary: Codable, Sendable, Equatable {
     public let exp: Int64
 
     public var isTest: Bool { kind == "test" }
+    public var isSSH: Bool { kind == "ssh" }
     public var expires: Date { Date(timeIntervalSince1970: TimeInterval(exp)) }
 }
 

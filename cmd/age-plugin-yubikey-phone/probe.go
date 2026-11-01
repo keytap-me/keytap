@@ -81,7 +81,7 @@ func runTest(args []string) error {
 		}
 		return nil
 	}
-	if _, err := askPhone(nil, cfg, req, check); err != nil {
+	if _, err := askPhone(func(m string) { fmt.Println(m) }, cfg, req, check); err != nil {
 		return err
 	}
 	fmt.Println("✓ Dry run passed: phone reachable, answer signed by the paired phone, YubiKey PIN + tap + key agreement work.")

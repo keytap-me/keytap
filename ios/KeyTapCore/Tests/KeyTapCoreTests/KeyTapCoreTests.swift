@@ -208,3 +208,104 @@ struct FakeCard: PIVTransport {
     #expect(with.displayNote == "why")
     #expect(without.note == nil && without.displayNote == nil)
 }
+
+// MARK: FIDO2 / SSH
+
+@Test func cborRoundTripAndCanonicalOrder() throws {
+    let m = CBOR.map([(.text("type"), .text("public-key")), (.int(-2), .bytes(Data([1, 2]))), (.text("id"), .bytes(Data([9]))),
+                      (.int(3), .array([.bool(true), .null, .int(-25), .int(70000)]))])
+    let enc = m.encoded
+    #expect(try CBOR.decode(enc) == m)
+    // canonical: 0x03 (int 3) < 0x21 (int -2) < "id" (3 bytes) < "type" (5 bytes)
+    #expect(enc.prefix(2) == Data([0xA4, 0x03]))
+}
+
+private func sshRequest(_ cred: SoftFIDOAuthenticator.Credential, data: Data, uv: Bool = true) -> ApprovalRequest.SSHSign {
+    ApprovalRequest.SSHSign(application: cred.rpId, credentialID: cred.id.base64Raw,
+                            clientDataHash: Data(SHA256.hash(data: data)).base64Raw, algorithm: "ed25519",
+                            userPresence: true, userVerification: uv, purpose: "login", login: "deploy")
+}
+
+private func verifyAssertion(_ a: CTAP2.Assertion, _ cred: SoftFIDOAuthenticator.Credential, data: Data) throws -> Bool {
+    var msg = Data(SHA256.hash(data: Data(cred.rpId.utf8)))
+    msg.append(a.flags)
+    msg.append(contentsOf: withUnsafeBytes(of: a.counter.bigEndian, Array.init))
+    msg += Data(SHA256.hash(data: data))
+    return try Curve25519.Signing.PublicKey(rawRepresentation: cred.publicKey).isValidSignature(a.signature, for: msg)
+}
+
+@Test(arguments: [(true, [2, 1]), (false, [2, 1]), (false, [1])])
+func sshSignatureWithPIN(pinUvAuthToken: Bool, protocols: [Int]) async throws {
+    let cred = SoftFIDOAuthenticator.Credential(rpId: "ssh:deploy")
+    let key = SoftFIDOAuthenticator(credential: cred, pin: "123456", pinUvAuthToken: pinUvAuthToken, protocols: protocols)
+    let data = Data("userauth request bytes".utf8)
+    let a = try await SSHSigner.sign(sshRequest(cred, data: data), pin: "123456", transport: key)
+    #expect(a.flags == 0x05)         // user presence + user verification
+    #expect(a.counter == 1)
+    #expect(try verifyAssertion(a, cred, data: data))
+    let b = try await SSHSigner.sign(sshRequest(cred, data: data), pin: "123456", transport: key)
+    #expect(b.counter == 2)
+}
+
+/// The NFC select answer only names the protocols; a YubiKey 5 answers "U2F_V2" and still signs with FIDO2.
+@Test(arguments: ["U2F_V2", "FIDO_2_0"])
+func sshSelectReplyDoesNotDecideFIDO2(reply: String) async throws {
+    let cred = SoftFIDOAuthenticator.Credential(rpId: "ssh:")
+    let key = SoftFIDOAuthenticator(credential: cred, pin: "123456", selectReply: reply)
+    let a = try await SSHSigner.sign(sshRequest(cred, data: Data([1])), pin: "123456", transport: key)
+    #expect(try verifyAssertion(a, cred, data: Data([1])))
+}
+
+@Test func sshU2FOnlyKeyIsNamed() async throws {
+    let cred = SoftFIDOAuthenticator.Credential(rpId: "ssh:")
+    let key = SoftFIDOAuthenticator(credential: cred, pin: "123456", fido2: false)
+    await #expect(throws: CTAPError.notFIDO2) {
+        try await SSHSigner.sign(sshRequest(cred, data: Data([1])), pin: "123456", transport: key)
+    }
+}
+
+@Test func sshWrongPINCountsDown() async throws {
+    let cred = SoftFIDOAuthenticator.Credential(rpId: "ssh:")
+    let key = SoftFIDOAuthenticator(credential: cred, pin: "123456")
+    await #expect(throws: CTAPError.wrongPIN(retriesLeft: 7)) {
+        try await SSHSigner.sign(sshRequest(cred, data: Data([1])), pin: "000000", transport: key)
+    }
+    #expect(await key.retries == 7)
+}
+
+@Test func sshOtherKeyHasNoCredential() async throws {
+    let cred = SoftFIDOAuthenticator.Credential(rpId: "ssh:")
+    let other = SoftFIDOAuthenticator(credential: .init(rpId: "ssh:"), pin: "123456")
+    await #expect(throws: CTAPError.noCredential) {
+        try await SSHSigner.sign(sshRequest(cred, data: Data([1])), pin: "123456", transport: other)
+    }
+}
+
+@Test func sshVerifyRequiredNeedsPIN() async throws {
+    let cred = SoftFIDOAuthenticator.Credential(rpId: "ssh:")
+    let key = SoftFIDOAuthenticator(credential: cred, pin: "123456")
+    await #expect(throws: CTAPError.pinRequired) {
+        try await SSHSigner.sign(sshRequest(cred, data: Data([1])), pin: "", transport: key)
+    }
+}
+
+/// The answer's signed message carries the assertion, in the same line format as bridge/request.go.
+@Test func sshAnswerSignedMessage() throws {
+    let ssh = SSHAnswer(signature: "c2ln", flags: 5, counter: 3)
+    let m = String(decoding: ApprovalAnswer.signedMessage(requestBytes: Data("{}".utf8), nonce: "n", declined: false,
+                                                          results: [], ssh: ssh), as: UTF8.self)
+    #expect(m.hasSuffix("n\nssh c2ln 5 3\n"))
+}
+
+@Test func sshRequestDecodes() throws {
+    let json = """
+    {"version":1,"kind":"ssh","id":"i","code":"ABC-DEF","nonce":"n","created_at":"2026-11-01T10:00:00Z",
+     "expires_at":"2026-11-01T10:05:00Z","host":"workstation","user":"you","command":"ssh build-server","cwd":"/",
+     "identities":[],"files":[],
+     "ssh":{"application":"ssh:deploy","credential_id":"AQI","client_data_hash":"AA","algorithm":"ed25519",
+            "user_presence":true,"user_verification":true,"purpose":"login","login":"deploy",
+            "key_fingerprint":"SHA256:x","key_name":"id_ed25519_sk"}}
+    """
+    let r = try BridgeClient.decoder.decode(ApprovalRequest.self, from: Data(json.utf8))
+    #expect(r.isSSH && !r.isUnknownKind && r.ssh?.login == "deploy" && r.ssh?.keyName == "id_ed25519_sk")
+}

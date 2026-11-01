@@ -49,3 +49,7 @@ func requester() (command, cwd string) {
 	}
 	return clip(command), ""
 }
+
+var isDarwin = false
+
+func sshRequester() (command, cwd string) { return requester() }

@@ -13,6 +13,14 @@ struct SetupWizard: View {
     var body: some View {
         NavigationStack(path: $path) {
             WelcomeStep { path.append(.computer) }
+                .toolbar {
+                    // Adding another computer from Settings: the paired ones keep working, so the setup can be left.
+                    if !model.pairings.isEmpty {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Cancel") { model.setupDone = true }
+                        }
+                    }
+                }
                 .navigationDestination(for: Step.self) { step in
                     switch step {
                     case .computer: ComputerStep { path.append(.pair) }
@@ -25,6 +33,10 @@ struct SetupWizard: View {
         .onChange(of: incomingLink) { _, link in
             // A pairing link opened from outside jumps straight to the pairing step.
             if link != nil, !path.contains(.pair) { path = [.computer, .pair] }
+        }
+        .onAppear {
+            // …also when the link is what opened the wizard (another computer, from the home screen).
+            if incomingLink != nil, !path.contains(.pair) { path = [.computer, .pair] }
         }
     }
 }
@@ -52,6 +64,8 @@ private struct WelcomeStep: View {
                         text: "KeyTap talks only to your own computer, directly over your network or VPN. No cloud, nothing collected. Notifications are optional and end-to-end encrypted.")
                 Feature(symbol: "eye", title: "You see what you approve",
                         text: "Every request shows the command, the file and a code that your terminal shows too.")
+                Feature(symbol: "terminal", title: "SSH sign-ins, too",
+                        text: "SSH keys on the YubiKey (ed25519-sk) sign in from any of your computers: approve here, tap the key.")
                 NavigationLink("How KeyTap works and why it is secure") { DocsView() }
                     .font(.callout)
             }

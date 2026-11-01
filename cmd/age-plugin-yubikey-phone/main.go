@@ -8,6 +8,8 @@
 //	age-plugin-yubikey-phone pair --host IP [--port 8743] [--recipient age1yubikey1…]
 //	age-plugin-yubikey-phone test [--serial N] [--note TEXT]   dry run through the phone: PIN + tap + ECDH, nothing decrypted
 //	age-plugin-yubikey-phone devices | unpair NAME | version
+//	age-plugin-yubikey-phone ssh-opts [key file…]   ssh arguments that send FIDO2 (ed25519-sk) signatures to the phone
+//	age-plugin-yubikey-phone sk-sign                 what keytap-sk.dylib (the OpenSSH security key provider) runs
 //
 // KEYTAP_NOTE="…" in the environment of a decrypt (e.g. `KEYTAP_NOTE="rotate the db password" sops -d f`)
 // is shown at the top of the request on the phone: the requester's own words, not verified.
@@ -40,6 +42,10 @@ func main() {
 		err = runTest(args[1:])
 	case len(args) > 0 && args[0] == "devices":
 		err = runDevices()
+	case len(args) > 0 && args[0] == "sk-sign":
+		err = runSKSign(os.Stdin, os.Stdout)
+	case len(args) > 0 && args[0] == "ssh-opts":
+		err = runSSHOpts(args[1:], os.Stdout)
 	case len(args) == 2 && args[0] == "unpair":
 		err = runUnpair(args[1])
 	default:

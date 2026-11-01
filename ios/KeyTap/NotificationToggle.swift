@@ -28,17 +28,18 @@ struct NotificationSection: View {
         } header: {
             Text("Notifications (optional)")
         } footer: {
-            Text("Off by default. When on, your computer asks the KeyTap relay (push.keytap.me) to wake this iPhone through Apple's push service when a decryption waits. A notification says only that a request is waiting and when it expires; what it is about, you see in KeyTap. The relay stores nothing. The notification disappears when you answer or after five minutes.")
+            Text("Off by default. When on, your computer asks the KeyTap relay (push.keytap.me) to wake this iPhone through Apple's push service when a decryption or an SSH sign-in waits. A notification says only that a request is waiting and when it expires; what it is about, you see in KeyTap. The relay stores nothing. The notification disappears when you answer or after five minutes.")
         }
     }
 
     private var status: String? {
         guard model.notificationsWanted else { return nil }
         if model.pushToken == nil { return "Registering with Apple…" }
-        if model.pairing == nil { return "Sent to your computer when you pair." }
-        if model.pushSyncPending {
-            return "Not on \(model.pairing?.name ?? "the computer") yet — it is sent the next time the computer is listening, e.g. run age-plugin-yubikey-phone test."
+        if model.pairings.isEmpty { return "Sent to your computer when you pair." }
+        let waiting = model.pairings.filter { model.pushPending.contains($0.id) }.map(\.name)
+        if !waiting.isEmpty {
+            return "Not on \(waiting.joined(separator: ", ")) yet — it is sent the next time that computer is listening, e.g. run age-plugin-yubikey-phone test."
         }
-        return "On for \(model.pairing?.name ?? "your computer")."
+        return "On for \(model.pairings.map(\.name).joined(separator: ", "))."
     }
 }

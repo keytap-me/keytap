@@ -5,6 +5,9 @@
 //   keytap-softphone keygen                 create the throwaway key; print recipient + identity
 //   keytap-softphone pair '<keytap://pair…>'
 //   keytap-softphone approve [--decline]    wait for one request, answer it, exit
+//   keytap-softphone fido-keygen <application> <key file>
+//                                           a throwaway FIDO2 credential (PIN 123456) + its OpenSSH key files
+//                                           (<key file>, <key file>.pub), for ssh requests (keytap-sk)
 //
 // State: $KEYTAP_SOFTPHONE_DIR (default ~/.keytap-softphone).
 import Foundation
@@ -16,6 +19,7 @@ struct State: Codable {
     var host: String?
     var pin: Data?
     var token: String?
+    var fido: SoftFIDOAuthenticator.Credential?
 }
 
 let dir = URL(fileURLWithPath: ProcessInfo.processInfo.environment["KEYTAP_SOFTPHONE_DIR"]
@@ -73,7 +77,14 @@ do {
                 continue
             }
             print("request \(req.code) from \(req.user)@\(req.host): \(req.command) [\(req.files.count) file(s)]")
-            if req.isTest {
+            if let n = req.displayNote { print("note: \(n)") }
+            if req.isSSH, let sign = req.ssh, !args.contains("--decline") {
+                guard let cred = s.fido else { fail("ssh request, but no FIDO credential (fido-keygen)") }
+                let key = SoftFIDOAuthenticator(credential: cred, pin: "123456")
+                let a = try await SSHSigner.sign(sign, pin: "123456", transport: key)
+                try await client.send(try Approver.answerSSH(req, requestBytes: bytes, assertion: a, signer: signer))
+                print("signed ssh \(sign.purpose) as \(sign.login ?? "?") with \(sign.keyName ?? sign.keyFingerprint ?? "?") (flags \(a.flags)), server key \(sign.hostKeyFingerprint ?? "-")")
+            } else if req.isTest {
                 let proof = try await Approver.probe(req, with: key)
                 try await client.send(try Approver.answerProbe(req, requestBytes: bytes, proof: proof, signer: signer))
                 print("answered the dry run")
@@ -88,8 +99,19 @@ do {
             exit(0)
         }
         fail("no request within 60 s")
+    case "fido-keygen":
+        guard args.count == 3 else { fail("usage: fido-keygen <application, e.g. ssh:> <key file>") }
+        var s = try load()
+        let cred = SoftFIDOAuthenticator.Credential(rpId: args[1])
+        let files = cred.opensshFiles(comment: "keytap-softphone")
+        try Data(files.privateKey.utf8).write(to: URL(fileURLWithPath: args[2]))
+        chmod(args[2], 0o600)
+        try Data(files.publicKey.utf8).write(to: URL(fileURLWithPath: args[2] + ".pub"))
+        s.fido = cred
+        try save(s)
+        print(files.publicKey, terminator: "")
     default:
-        fail("usage: keytap-softphone keygen | pair <link> | approve [--decline]")
+        fail("usage: keytap-softphone keygen | pair <link> | approve [--decline] | fido-keygen <application> <key file>")
     }
 } catch {
     fail("\(error.localizedDescription)")

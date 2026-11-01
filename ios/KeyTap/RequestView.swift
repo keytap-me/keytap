@@ -46,11 +46,33 @@ struct RequestView: View {
                         }
                         .frame(maxWidth: .infinity)
                     }
-                    if request.isTest {
+                    if request.isUnknownKind {
+                        Section {
+                            Label("This request needs a newer version of KeyTap. Update the app, then run the command again.",
+                                  systemImage: "arrow.down.app")
+                                .font(.callout)
+                        }
+                    } else if request.isTest {
                         Section {
                             Label("Dry run — nothing is decrypted. It checks the computer, this phone, your PIN and the tap.",
                                   systemImage: "checkmark.shield")
                                 .font(.callout)
+                        }
+                    } else if let ssh = request.ssh {
+                        Section {
+                            Label(ssh.isLogin ? "Sign in as \(ssh.login ?? "?")" : "SSH signature", systemImage: "terminal.fill")
+                                .font(.callout.weight(.semibold))
+                            if let name = ssh.keyName ?? ssh.keyFingerprint {
+                                LabeledContent("Key") { Text(name).font(.caption.monospaced()).lineLimit(1).truncationMode(.middle) }
+                            }
+                            if let host = ssh.hostKeyFingerprint {
+                                LabeledContent("Server key") { Text(host).font(.caption.monospaced()).lineLimit(1).truncationMode(.middle) }
+                            }
+                            commandRow
+                        } footer: {
+                            Text(ssh.isLogin
+                                 ? "Your YubiKey signs this one SSH login with its FIDO2 key. The key never leaves the YubiKey."
+                                 : "Your YubiKey signs with its FIDO2 SSH key. The key never leaves the YubiKey.")
                         }
                     } else {
                         Section {
@@ -60,20 +82,7 @@ struct RequestView: View {
                             if !request.cwd.isEmpty {
                                 PathRow(symbol: "folder", path: request.cwd)
                             }
-                            Button {
-                                showCommand.toggle()
-                            } label: {
-                                HStack(alignment: .firstTextBaseline) {
-                                    Image(systemName: "terminal").foregroundStyle(.secondary).frame(width: 22)
-                                    Text(request.command)
-                                        .font(.caption.monospaced())
-                                        .lineLimit(showCommand ? nil : 1)
-                                        .truncationMode(.middle)
-                                        .foregroundStyle(.primary)
-                                }
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityHint(showCommand ? "Shows less" : "Shows the full command")
+                            commandRow
                             if request.files.count > 1 || request.identities.count > 1 {
                                 LabeledContent("Files · YubiKeys", value: "\(request.files.count) · \(request.identities.map { String($0.serial) }.joined(separator: ", "))")
                                     .font(.footnote)
@@ -89,7 +98,7 @@ struct RequestView: View {
                 .safeAreaInset(edge: .bottom) { actions(left: left) }
                 .onChange(of: left <= 0) { _, expired in if expired { error = "This request expired." } }
             }
-            .navigationTitle(request.isTest ? "Dry Run" : "Approve Decryption")
+            .navigationTitle(request.isTest ? "Dry Run" : request.ssh.map { $0.isLogin ? "Approve SSH Login" : "Approve SSH Signature" } ?? "Approve Decryption")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -106,13 +115,36 @@ struct RequestView: View {
         }
     }
 
+    /// The requesting command line, one line until tapped.
+    private var commandRow: some View {
+        Button {
+            showCommand.toggle()
+        } label: {
+            HStack(alignment: .firstTextBaseline) {
+                Image(systemName: "terminal").foregroundStyle(.secondary).frame(width: 22)
+                Text(request.command)
+                    .font(.caption.monospaced())
+                    .lineLimit(showCommand ? nil : 1)
+                    .truncationMode(.middle)
+                    .foregroundStyle(.primary)
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityHint(showCommand ? "Shows less" : "Shows the full command")
+    }
+
+    /// SSH uses the YubiKey's FIDO2 PIN (4–63 characters, any), decryptions its PIV PIN (6–8 digits or letters).
+    private var pinValid: Bool { request.isSSH ? (4...63).contains(pin.count) : (6...8).contains(pin.count) }
+
     /// PIN + approve, always on screen above the keyboard.
     private func actions(left: Int) -> some View {
         VStack(spacing: 10) {
             if !model.approvesInSoftware {
-                SecureField("YubiKey PIN", text: $pin)
-                    .keyboardType(.numberPad)
+                SecureField(request.isSSH ? "YubiKey FIDO2 PIN" : "YubiKey PIN", text: $pin)
+                    .keyboardType(request.isSSH ? .asciiCapable : .numberPad)
                     .textContentType(.oneTimeCode)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
                     .focused($pinFocused)
                     .padding(12)
                     .background(.background, in: .rect(cornerRadius: 12))
@@ -123,14 +155,14 @@ struct RequestView: View {
                 HStack {
                     if busy { ProgressView().tint(.white) }
                     Label(model.isDemo ? "Approve (demo)" : model.useSoftwareKey ? "Approve (software test key)"
-                          : request.isTest ? "Run with YubiKey" : "Approve with YubiKey",
+                          : request.isTest ? "Run with YubiKey" : request.isSSH ? "Sign with YubiKey" : "Approve with YubiKey",
                           systemImage: "key.radiowaves.forward")
                 }
                 .frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
-            .disabled(busy || left <= 0 || (!model.approvesInSoftware && !(6...8).contains(pin.count)))
+            .disabled(busy || left <= 0 || request.isUnknownKind || (!model.approvesInSoftware && !pinValid))
             .accessibilityIdentifier("approve")
             if !model.approvesInSoftware {
                 Text("Then hold your YubiKey to the top of the iPhone. The PIN goes only to the key.")

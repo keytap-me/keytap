@@ -57,6 +57,13 @@ tar -xzf "$tmp/$asset" -C "$tmp"
 mkdir -p "$bin_dir"
 install -m 755 "$tmp/age-plugin-yubikey-phone" "$bin_dir/age-plugin-yubikey-phone"
 say "Installed $bin_dir/age-plugin-yubikey-phone ($("$bin_dir/age-plugin-yubikey-phone" version 2>/dev/null || echo unknown version))"
+# macOS: the OpenSSH security key provider for ed25519-sk keys (ssh logins approved on the phone), in ../lib
+if [ -f "$tmp/keytap-sk.dylib" ]; then
+  lib_dir="$(cd "$bin_dir/.." && pwd)/lib"
+  mkdir -p "$lib_dir"
+  install -m 644 "$tmp/keytap-sk.dylib" "$lib_dir/keytap-sk.dylib"
+  say "Installed $lib_dir/keytap-sk.dylib (SSH: age-plugin-yubikey-phone ssh-opts <key file>)"
+fi
 
 if [ "$shim" = 1 ]; then
   link="$bin_dir/age-plugin-yubikey"

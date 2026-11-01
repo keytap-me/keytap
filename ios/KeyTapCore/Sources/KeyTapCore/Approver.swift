@@ -155,6 +155,15 @@ public enum Approver {
         return ApprovalAnswer(id: request.id, declined: false, results: [], proof: proof, signature: try signer.sign(msg).base64Raw)
     }
 
+    /// The answer to an SSH request: the YubiKey's assertion, signed into the answer like a file key.
+    public static func answerSSH(_ request: ApprovalRequest, requestBytes: Data, assertion: CTAP2.Assertion,
+                                 signer: DeviceSigner) throws -> ApprovalAnswer {
+        let ssh = SSHAnswer(signature: assertion.signature.base64Raw, flags: assertion.flags, counter: assertion.counter)
+        let msg = ApprovalAnswer.signedMessage(requestBytes: requestBytes, nonce: request.nonce, declined: false,
+                                               results: [], ssh: ssh)
+        return ApprovalAnswer(id: request.id, declined: false, results: [], ssh: ssh, signature: try signer.sign(msg).base64Raw)
+    }
+
     public static func decline(_ request: ApprovalRequest, requestBytes: Data, signer: DeviceSigner) throws -> ApprovalAnswer {
         let msg = ApprovalAnswer.signedMessage(requestBytes: requestBytes, nonce: request.nonce, declined: true, results: [])
         return ApprovalAnswer(id: request.id, declined: true, results: [], signature: try signer.sign(msg).base64Raw)

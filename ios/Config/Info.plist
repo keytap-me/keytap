@@ -16,9 +16,10 @@
 	<key>com.apple.developer.nfc.readersession.iso7816.select-identifiers</key>
 	<array>
 		<string>A000000308</string>
+		<string>A0000006472F0001</string>
 	</array>
 	<key>NFCReaderUsageDescription</key>
-	<string>KeyTap reads your YubiKey to approve a decryption on your workstation.</string>
+	<string>KeyTap reads your YubiKey to approve a decryption or an SSH sign-in on your computer.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>KeyTap connects to your workstation to fetch decryption requests.</string>
 	<key>UIBackgroundModes</key>

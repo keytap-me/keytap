@@ -33,6 +33,10 @@ jobs:
       - run: xcodebuild -version
       - name: KeyTapCore tests
         run: cd ios/KeyTapCore && swift test
+      - name: OpenSSH security key provider (keytap-sk.dylib)
+        run: |
+          clang -Wall -Wextra -Werror -O2 -dynamiclib -arch arm64 -arch x86_64 -mmacosx-version-min=12.0 -o /tmp/keytap-sk.dylib provider/keytap-sk.c
+          nm -gU /tmp/keytap-sk.dylib | grep -E '_sk_(api_version|enroll|sign|load_resident_keys)$' | wc -l | grep -qx ' *4'
       - name: build (Release, arm64, unsigned)
         run: |
           xcodebuild -quiet -project ios/KeyTap.xcodeproj -scheme KeyTap -configuration Release \

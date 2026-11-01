@@ -49,10 +49,28 @@ type Probe struct {
 	EPK    string `json:"epk"` // base64, 33 bytes SEC1 compressed
 }
 
+// SSHSign is an OpenSSH FIDO2 signature (an ed25519-sk / ecdsa-sk key on the YubiKey, e.g. an ssh login):
+// the phone runs CTAP2 getAssertion on the YubiKey's FIDO applet over NFC with these values and the PIN the
+// user enters (user verification), and returns the authenticator's signature, flags and counter.
+type SSHSign struct {
+	Application      string `json:"application"`      // the FIDO rpId, e.g. "ssh:" or "ssh:deploy"
+	CredentialID     string `json:"credential_id"`    // base64, the key handle from the ssh key file
+	ClientDataHash   string `json:"client_data_hash"` // base64, SHA-256 of the data ssh signs
+	Algorithm        string `json:"algorithm"`        // "ed25519" | "es256"
+	UserPresence     bool   `json:"user_presence"`
+	UserVerification bool   `json:"user_verification"`              // the key was made with verify-required
+	Purpose          string `json:"purpose"`                        // "login" (ssh user authentication) | "signature" (anything else)
+	Login            string `json:"login,omitempty"`                // the remote user name of a login
+	KeyFingerprint   string `json:"key_fingerprint,omitempty"`      // SHA256:… of the public key ssh offers
+	KeyName          string `json:"key_name,omitempty"`             // the matching local .pub file or its comment
+	HostKey          string `json:"host_key_fingerprint,omitempty"` // SHA256:… of the server's host key (host-bound login)
+}
+
 type Request struct {
 	Version    int        `json:"version"`
-	Kind       string     `json:"kind,omitempty"` // "" = decrypt, "test" = dry run
+	Kind       string     `json:"kind,omitempty"` // "" = decrypt, "test" = dry run, "ssh" = OpenSSH FIDO2 signature
 	Probe      *Probe     `json:"probe,omitempty"`
+	SSH        *SSHSign   `json:"ssh,omitempty"`
 	ID         string     `json:"id"`
 	Code       string     `json:"code"` // shown in the terminal AND on the phone; the user compares
 	Nonce      string     `json:"nonce"`
@@ -73,12 +91,20 @@ type Result struct {
 	Error   string `json:"error,omitempty"`
 }
 
+// SSHAnswer is the YubiKey's CTAP2 assertion for an SSHSign request.
+type SSHAnswer struct {
+	Signature string `json:"signature"` // base64: 64 bytes Ed25519, or DER ECDSA for es256
+	Flags     uint8  `json:"flags"`     // authenticator data flags (UP 0x01, UV 0x04)
+	Counter   uint32 `json:"counter"`   // signature counter
+}
+
 type Answer struct {
-	ID        string   `json:"id"`
-	Declined  bool     `json:"declined"`
-	Results   []Result `json:"results"`
-	Proof     string   `json:"proof,omitempty"` // dry run: base64 HMAC-SHA256(wrap key, "keytap-probe-v1" ‖ nonce)
-	Signature string   `json:"signature"`       // base64 DER ECDSA-P256-SHA256 over signedMessage
+	ID        string     `json:"id"`
+	Declined  bool       `json:"declined"`
+	Results   []Result   `json:"results"`
+	SSH       *SSHAnswer `json:"ssh,omitempty"`
+	Proof     string     `json:"proof,omitempty"` // dry run: base64 HMAC-SHA256(wrap key, "keytap-probe-v1" ‖ nonce)
+	Signature string     `json:"signature"`       // base64 DER ECDSA-P256-SHA256 over signedMessage
 }
 
 // signedMessage is the canonical byte string the phone signs. Keep it in lockstep with
@@ -97,6 +123,9 @@ func signedMessage(requestBytes []byte, nonce string, a *Answer) []byte {
 	}
 	if a.Proof != "" {
 		b.WriteString("proof " + a.Proof + "\n")
+	}
+	if a.SSH != nil {
+		fmt.Fprintf(&b, "ssh %s %d %d\n", a.SSH.Signature, a.SSH.Flags, a.SSH.Counter)
 	}
 	rs := append([]Result(nil), a.Results...)
 	sort.Slice(rs, func(i, j int) bool { return rs[i].Index < rs[j].Index })

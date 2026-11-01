@@ -179,7 +179,7 @@ func runIdentityPlugin(stdin io.Reader, stdout io.Writer) error {
 		return finish(c)
 	}
 
-	answer, err := askPhone(c, cfg, req, nil)
+	answer, err := askPhone(func(m string) { notify(c, m) }, cfg, req, nil)
 	if err != nil {
 		logf("request %s: %v", req.Code, err)
 		c.send("error", []string{"internal"}, []byte("KeyTap: "+err.Error()))
@@ -232,7 +232,8 @@ func firstStanza(req *Request, idx int) int {
 	return -1
 }
 
-func askPhone(c *ageConn, cfg *Config, req *Request, check func(*Answer) error) (*Answer, error) {
+// askPhone serves one request until the phone answers or it expires. say tells the user what to do.
+func askPhone(say func(string), cfg *Config, req *Request, check func(*Answer) error) (*Answer, error) {
 	id := make([]byte, 16)
 	nonce := make([]byte, 16)
 	rand.Read(id)
@@ -244,7 +245,9 @@ func askPhone(c *ageConn, cfg *Config, req *Request, check func(*Answer) error) 
 	req.ExpiresAt = req.CreatedAt.Add(requestTTL)
 	req.Host = cfg.displayName()
 	req.User = os.Getenv("USER")
-	req.Command, req.Cwd = requester()
+	if req.Command == "" {
+		req.Command, req.Cwd = requester()
+	}
 	if req.Note == "" {
 		req.Note = cleanNote(os.Getenv("KEYTAP_NOTE"))
 	}
@@ -257,7 +260,7 @@ func askPhone(c *ageConn, cfg *Config, req *Request, check func(*Answer) error) 
 
 	ctx, cancel := context.WithDeadline(context.Background(), req.ExpiresAt)
 	defer cancel()
-	notify(c, fmt.Sprintf("KeyTap: approve request %s on your iPhone (expires %s)", req.Code, req.ExpiresAt.Local().Format("15:04:05")))
+	say(fmt.Sprintf("KeyTap: approve request %s on your iPhone (expires %s)", req.Code, req.ExpiresAt.Local().Format("15:04:05")))
 	ln, err := listen(ctx, cfg.Listen, cert)
 	if err != nil {
 		return nil, err

@@ -1,7 +1,7 @@
 # KeyTap bridge — `age-plugin-yubikey-phone`
 
-Approve an `age` / `sops` decryption on your computer with the YubiKey® in your pocket, by tapping
-it against your iPhone. This repository holds both sides: the computer side, a small age plugin
+Approve an `age` / `sops` decryption — or an SSH login with a FIDO2 key (`ed25519-sk`) — on your
+computer with the YubiKey® in your pocket, by tapping it against your iPhone. This repository holds both sides: the computer side, a small age plugin
 called the **KeyTap bridge** (`cmd/`), and the source of the free **KeyTap iPhone app** (`ios/`).
 Website and full guide: **https://keytap.me**
 
@@ -30,7 +30,7 @@ operation; the YubiKey still does the key agreement and still asks for its PIN a
   bound to the SHA-256 of the exact request bytes the phone displayed and to a one-time nonce.
 - **Small exposure.** The bridge listens only while a decrypt waits, only on the address given to
   `pair --host`, and every request expires after 300 seconds (five minutes).
-- **Only the file key travels back.** The phone unwraps the 16-byte age file key and returns that,
+- **Only the file key travels back** (for SSH: only the signature, see SSH logins). The phone unwraps the 16-byte age file key and returns that,
   over TLS 1.3 to the pinned certificate. File contents never leave the computer.
 - **Registered keys only.** Pairing registers the YubiKeys you tap. `sops` starts the plugin once
   per recipient; requests for keys that are not registered are answered "not here" at once, so a
@@ -99,6 +99,36 @@ the command and the key still decide. `test --note "…"` sets it for a dry run.
 State lives in `~/.secure/keytap/` (`KEYTAP_DIR` overrides): the bridge certificate, the paired
 devices and a log of request metadata — never a file key.
 
+**Several computers.** One iPhone can be paired with every computer you use (KeyTap 1.1 or later):
+run `pair` on each and paste each link into the app (Settings ▸ Add a Computer). Each request shows
+which computer asked.
+
+## SSH logins (FIDO2 keys on the YubiKey)
+
+SSH keys that live on the YubiKey — `ssh-keygen -t ed25519-sk -O resident -O verify-required`, made
+once with the key plugged in — can be approved on the phone too (bridge v0.4.0 and KeyTap 1.1 or
+later). The macOS release ships `keytap-sk.dylib`, an OpenSSH security key provider, installed next
+to the bridge (`~/.local/lib`). ssh hands it the signature; the bridge serves it to the phone like a
+decryption, and the phone runs the FIDO2 assertion on the YubiKey over NFC with the PIN you enter
+there (the YubiKey's FIDO2 PIN). The private key never leaves the YubiKey.
+
+```sh
+ssh $(age-plugin-yubikey-phone ssh-opts ~/.ssh/id_ed25519_sk) user@host
+# = ssh -o SecurityKeyProvider=~/.local/lib/keytap-sk.dylib -o IdentitiesOnly=yes -i ~/.ssh/id_ed25519_sk user@host
+```
+
+- The phone shows the account you sign in as, the key, the server's host key and the ssh command
+  (plus `KEYTAP_NOTE`, if set). The bridge checks the YubiKey's signature against the offered key
+  before handing it to ssh.
+- The key file (`id_ed25519_sk`) holds only the credential handle, no key material: copy it to any
+  computer that should sign in this way. ssh-keygen needs the key plugged in to create it
+  (`ssh-keygen -K` downloads resident keys).
+- Keys made with `verify-required` make ssh ask for a PIN before signing: press Return there; the
+  PIN is entered on the phone and goes only to the YubiKey (or answer it with `SSH_ASKPASS`).
+- Tested with Homebrew's OpenSSH 10 (OpenSSH 9.0 or later: the provider speaks sk-api version 10). Use it with `ssh`
+  directly, not through `ssh-add`: ssh-agent only loads providers from allowlisted paths.
+  Creating keys and `ssh-keygen -K` through the phone are not supported; signing is.
+
 ## The iPhone app (`ios/`)
 
 The source of KeyTap as it is on the App Store: SwiftUI, Apple frameworks only (CryptoKit, CoreNFC,
@@ -138,8 +168,8 @@ either, because a modified app could show any hash.
 
 So KeyTap keeps what the app can do small, and that part does not depend on trusting our build:
 the private key never leaves the YubiKey, so no app can copy it; every decrypt still needs the
-physical key, its PIN and a tap; and the phone only ever sees the 16-byte file key of the one
-request in front of it, never your files. The computer side, where your files are, is this
+physical key, its PIN and a tap; and the phone only ever sees the 16-byte file key (or the SSH
+signature) of the one request in front of it, never your files. The computer side, where your files are, is this
 repository's bridge, and that one you can verify: release binaries are built by GitHub Actions from
 the tag, listed in `SHA256SUMS`, and carry build provenance attestations (see Install).
 

@@ -34,9 +34,36 @@ public struct ApprovalRequest: Codable, Sendable, Identifiable, Equatable {
         public let epk: String
     }
 
+    /// An OpenSSH FIDO2 signature (ed25519-sk / ecdsa-sk key on the YubiKey), e.g. an ssh login. Mirrors SSHSign
+    /// in bridge/request.go: the phone runs getAssertion with these values on the YubiKey's FIDO applet.
+    public struct SSHSign: Codable, Sendable, Equatable {
+        public let application: String
+        public let credentialID: String
+        public let clientDataHash: String
+        public let algorithm: String
+        public let userPresence: Bool
+        public let userVerification: Bool
+        public let purpose: String
+        public var login: String? = nil
+        public var keyFingerprint: String? = nil
+        public var keyName: String? = nil
+        /// SHA256:… of the server's host key (OpenSSH host-bound logins): which server is being logged in to.
+        public var hostKeyFingerprint: String? = nil
+
+        enum CodingKeys: String, CodingKey {
+            case application, algorithm, purpose, login
+            case credentialID = "credential_id", clientDataHash = "client_data_hash"
+            case userPresence = "user_presence", userVerification = "user_verification"
+            case keyFingerprint = "key_fingerprint", keyName = "key_name", hostKeyFingerprint = "host_key_fingerprint"
+        }
+
+        public var isLogin: Bool { purpose == "login" }
+    }
+
     public let version: Int
     public var kind: String? = nil
     public var probe: Probe? = nil
+    public var ssh: SSHSign? = nil
     public let id: String
     public let code: String
     public let nonce: String
@@ -53,11 +80,14 @@ public struct ApprovalRequest: Codable, Sendable, Identifiable, Equatable {
     public let files: [File]
 
     enum CodingKeys: String, CodingKey {
-        case version, kind, probe, id, code, nonce, host, user, command, cwd, note, identities, files
+        case version, kind, probe, ssh, id, code, nonce, host, user, command, cwd, note, identities, files
         case createdAt = "created_at", expiresAt = "expires_at"
     }
 
     public var isTest: Bool { kind == "test" }
+    public var isSSH: Bool { kind == "ssh" && ssh != nil }
+    /// A kind this app version does not know (a newer bridge): shown, but it cannot be approved.
+    public var isUnknownKind: Bool { !(kind == nil || kind == "" || isTest || isSSH) }
 
     /// The note, if it has any visible text.
     public var displayNote: String? {
@@ -84,22 +114,36 @@ public struct ApprovalResult: Codable, Sendable, Equatable {
     }
 }
 
+/// The YubiKey's assertion for an SSH request (SSHAnswer in bridge/request.go).
+public struct SSHAnswer: Codable, Sendable, Equatable {
+    public let signature: String
+    public let flags: UInt8
+    public let counter: UInt32
+    public init(signature: String, flags: UInt8, counter: UInt32) {
+        self.signature = signature
+        self.flags = flags
+        self.counter = counter
+    }
+}
+
 public struct ApprovalAnswer: Codable, Sendable {
     public let id: String
     public let declined: Bool
     public let results: [ApprovalResult]
     public var proof: String? = nil
+    public var ssh: SSHAnswer? = nil
     public var signature: String
 
     /// Keep in lockstep with signedMessage in bridge/request.go.
     public static func signedMessage(requestBytes: Data, nonce: String, declined: Bool, results: [ApprovalResult],
-                                     proof: String? = nil) -> Data {
+                                     proof: String? = nil, ssh: SSHAnswer? = nil) -> Data {
         let sum = SHA256.hash(data: requestBytes).map { String(format: "%02x", $0) }.joined()
         var s = "keytap-answer-v1\n\(sum)\n\(nonce)\n"
         if declined {
             s += "declined\n"
         } else {
             if let proof { s += "proof \(proof)\n" }
+            if let ssh { s += "ssh \(ssh.signature) \(ssh.flags) \(ssh.counter)\n" }
             for r in results.sorted(by: { $0.index < $1.index }) {
                 s += "\(r.index) \(r.fileKey ?? "!")\n"
             }
