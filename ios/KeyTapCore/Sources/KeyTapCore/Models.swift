@@ -8,6 +8,22 @@ public struct ApprovalRequest: Codable, Sendable, Identifiable, Equatable {
         public let serial: UInt32
         public let slot: UInt8
         public let tag: String
+        public init(serial: UInt32, slot: UInt8, tag: String) {
+            self.serial = serial
+            self.slot = slot
+            self.tag = tag
+        }
+    }
+
+    /// One of the computer's YubiKeys, for the key picker. The computer sends the list with every request;
+    /// the phone stores none of it.
+    public struct KeyInfo: Codable, Sendable, Equatable, Hashable {
+        public let serial: UInt32
+        public let label: String
+        public init(serial: UInt32, label: String) {
+            self.serial = serial
+            self.label = label
+        }
     }
 
     public struct Stanza: Codable, Sendable, Equatable {
@@ -49,8 +65,11 @@ public struct ApprovalRequest: Codable, Sendable, Identifiable, Equatable {
         public var keyName: String? = nil
         /// SHA256:… of the server's host key (OpenSSH host-bound logins): which server is being logged in to.
         public var hostKeyFingerprint: String? = nil
+        /// The YubiKey that holds this SSH key, when the computer knows it (its keys.conf).
+        public var keySerial: UInt32? = nil
 
         enum CodingKeys: String, CodingKey {
+            case keySerial = "key_serial"
             case application, algorithm, purpose, login
             case credentialID = "credential_id", clientDataHash = "client_data_hash"
             case userPresence = "user_presence", userVerification = "user_verification"
@@ -78,13 +97,33 @@ public struct ApprovalRequest: Codable, Sendable, Identifiable, Equatable {
     public var note: String? = nil
     public let identities: [Identity]
     public let files: [File]
+    /// The computer's YubiKeys and the one to preselect (the last used there).
+    public var keys: [KeyInfo]? = nil
+    public var defaultKey: UInt32? = nil
+    /// The request this one follows in the same tap: the phone holds the tapped key for it.
+    public var continues: String? = nil
 
     enum CodingKeys: String, CodingKey {
+        case defaultKey = "default"
+        case keys, continues
         case version, kind, probe, ssh, id, code, nonce, host, user, command, cwd, note, identities, files
         case createdAt = "created_at", expiresAt = "expires_at"
     }
 
     public var isTest: Bool { kind == "test" }
+
+    /// The keys to offer, labelled. A request without a list offers the serials of its identities.
+    public var offeredKeys: [KeyInfo] {
+        if let keys, !keys.isEmpty { return keys }
+        var seen = Set<UInt32>()
+        return (identities.map(\.serial) + [probe?.serial, ssh?.keySerial].compactMap { $0 })
+            .filter { $0 != 0 && seen.insert($0).inserted }
+            .map { KeyInfo(serial: $0, label: "YubiKey \($0)") }
+    }
+
+    public func label(of serial: UInt32) -> String {
+        offeredKeys.first { $0.serial == serial }?.label ?? "YubiKey \(serial)"
+    }
     public var isSSH: Bool { kind == "ssh" && ssh != nil }
     /// A kind this app version does not know (a newer bridge): shown, but it cannot be approved.
     public var isUnknownKind: Bool { !(kind == nil || kind == "" || isTest || isSSH) }
@@ -126,9 +165,16 @@ public struct SSHAnswer: Codable, Sendable, Equatable {
     }
 }
 
+/// The phone holds the tapped key (this serial) in an open session, but the request is not for it.
+public struct HeldKey: Codable, Sendable, Equatable {
+    public let serial: UInt32
+    public init(serial: UInt32) { self.serial = serial }
+}
+
 public struct ApprovalAnswer: Codable, Sendable {
     public let id: String
     public let declined: Bool
+    public var held: HeldKey? = nil
     public let results: [ApprovalResult]
     public var proof: String? = nil
     public var ssh: SSHAnswer? = nil
@@ -136,11 +182,13 @@ public struct ApprovalAnswer: Codable, Sendable {
 
     /// Keep in lockstep with signedMessage in bridge/request.go.
     public static func signedMessage(requestBytes: Data, nonce: String, declined: Bool, results: [ApprovalResult],
-                                     proof: String? = nil, ssh: SSHAnswer? = nil) -> Data {
+                                     proof: String? = nil, ssh: SSHAnswer? = nil, held: HeldKey? = nil) -> Data {
         let sum = SHA256.hash(data: requestBytes).map { String(format: "%02x", $0) }.joined()
         var s = "keytap-answer-v1\n\(sum)\n\(nonce)\n"
         if declined {
             s += "declined\n"
+        } else if let held {
+            s += "held \(held.serial)\n"
         } else {
             if let proof { s += "proof \(proof)\n" }
             if let ssh { s += "ssh \(ssh.signature) \(ssh.flags) \(ssh.counter)\n" }

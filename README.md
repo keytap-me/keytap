@@ -21,7 +21,8 @@ operation; the YubiKey still does the key agreement and still asks for its PIN a
 ## Security model
 
 - **Key, PIN and presence stay required.** The private key never leaves the YubiKey. The PIN is
-  entered on the phone, goes only to the YubiKey (PIV VERIFY) and is never stored. The tap is the touch.
+  entered on the phone for a key you pick, goes only to that YubiKey (the phone reads the tapped key's
+  serial first; a different key gets no PIN at all) and is never stored. The tap is the touch.
 - **No server.** The phone talks to exactly one peer: your computer, directly over your network or
   your own VPN. There is no KeyTap service in the trust path, no account and no cloud. Notifications
   are optional and off by default; switched on, they are end-to-end encrypted (see below).
@@ -32,9 +33,11 @@ operation; the YubiKey still does the key agreement and still asks for its PIN a
   `pair --host`, and every request expires after 300 seconds (five minutes).
 - **Only the file key travels back** (for SSH: only the signature, see SSH logins). The phone unwraps the 16-byte age file key and returns that,
   over TLS 1.3 to the pinned certificate. File contents never leave the computer.
-- **Registered keys only.** Pairing registers the YubiKeys you tap. `sops` starts the plugin once
-  per recipient; requests for keys that are not registered are answered "not here" at once, so a
-  file sealed to several YubiKeys still means one prompt.
+- **Any of your YubiKeys, one prompt.** The phone stores nothing about your YubiKeys: the computer
+  keeps the list (`keys.conf`, the identity file) and sends it with each request. `sops` starts the
+  plugin once per recipient and ssh tries one key after the other, so one command is one *chain*: the
+  phone holds the tapped key, the requests for other keys are answered "not here" without the phone,
+  and the tapped key's request is answered in the same tap. One unwrap (or signature) per chain.
 - **Limits.** Someone in control of your computer can start a decrypt of their own. That is why
   the phone shows the requesting command, its folder and a short code that your terminal shows too —
   compare before you approve.
@@ -83,12 +86,11 @@ decryption to the real `age-plugin-yubikey`. Without the shim, point your own re
 ## Use
 
 ```sh
-age-plugin-yubikey-phone pair --host <IP of this computer>   # prints a keytap:// link: paste it into the app,
-                                                              # tap your YubiKey(s) to register them
-age-plugin-yubikey-phone test                                 # dry run: PIN + tap + key agreement, nothing decrypted
+age-plugin-yubikey-phone pair --host <IP of this computer>   # prints a keytap:// link: paste it into the app
+age-plugin-yubikey-phone test [--key LABEL]                   # dry run: PIN + tap + key agreement, nothing decrypted
 sops -d secrets.enc.yaml                                      # approve on the phone (keep KeyTap open)
 KEYTAP_NOTE="renewing the staging certs" sops -d secrets.enc.yaml   # with a note shown at the top of the request
-age-plugin-yubikey-phone devices                              # paired phones and their YubiKeys
+age-plugin-yubikey-phone devices                              # paired phones, and the YubiKeys offered to them
 age-plugin-yubikey-phone unpair "<phone name>"
 ```
 
@@ -97,7 +99,21 @@ starts the decrypt, e.g. why it is needed. The phone shows it first, as the requ
 the command and the key still decide. `test --note "…"` sets it for a dry run.
 
 State lives in `~/.secure/keytap/` (`KEYTAP_DIR` overrides): the bridge certificate, the paired
-devices and a log of request metadata — never a file key.
+devices, the last key used (`last-key`, preselected on the phone) and a log of request metadata —
+never a file key.
+
+**Your YubiKeys.** The phone shows a key picker with the computer's list. Labels come from
+`~/.secure/keytap/keys.conf` (`KEYTAP_KEYS`), one key per line, else from the comments
+age-plugin-yubikey writes into the identity file (`~/.secure/age/yubikeys.agekey`, `KEYTAP_IDENTITIES`;
+`test` takes each key's recipient from there):
+
+```
+# <serial> <label> [ssh <.pub of a FIDO2 key on it>]...
+12345678 everyday ssh ~/.ssh/id_ed25519_sk_everyday.pub
+23456789 spare    ssh ~/.ssh/id_ed25519_sk_spare.pub
+```
+
+Add or drop a line and the next request carries the new list; nothing changes on the phone.
 
 **Several computers.** One iPhone can be paired with every computer you use (KeyTap 1.1 or later):
 run `pair` on each and paste each link into the app (Settings ▸ Add a Computer). Each request shows
@@ -128,6 +144,29 @@ ssh $(age-plugin-yubikey-phone ssh-opts ~/.ssh/id_ed25519_sk) user@host
 - Tested with Homebrew's OpenSSH 10 (OpenSSH 9.0 or later: the provider speaks sk-api version 10). Use it with `ssh`
   directly, not through `ssh-add`: ssh-agent only loads providers from allowlisted paths.
   Creating keys and `ssh-keygen -K` through the phone are not supported; signing is.
+- Several keys: pass one `-i` per key file. ssh tries them in order; with the phone holding the tapped
+  YubiKey, the others fail at once and the right one signs in the same tap.
+
+**The KeyTap agent** (bridge v0.5.0) is the other way in: an ssh-agent whose sk signatures come from
+the phone — and, raced against it, from upstream agents (another computer's agent forwarded here) that
+list the same key, i.e. have that YubiKey plugged in. The first valid signature wins; once the request
+is open on the phone, the phone wins.
+
+```sh
+age-plugin-yubikey-phone agent -a ~/.ssh/keytap.sock [--keys DIR] [--upstream SOCK]...
+ssh -o IdentityAgent=~/.ssh/keytap.sock -o IdentitiesOnly=yes -i ~/.ssh/id_ed25519_sk_everyday.pub user@host
+```
+
+It serves the keys named in `keys.conf` (and `--keys DIR`); the key handle is read from the private
+key file next to each `.pub` (it holds only the credential id, useless without the YubiKey).
+
+**For a race router** (ask several computers and the phone at once, the first answer wins), the bridge
+can start the phone request speculatively and withdraw it: `hold --session ID` (age's phase 1 on
+stdin), `status --session ID [--wait MS]` (pending 10 · engaged 11 · answered 12 · gone 13),
+`withdraw --session ID [--force]` (7 = refused, the request is open on the phone), and
+`--age-plugin=identity-v1 --session ID` to collect the result. With an explicit session the plugin
+exits 0 answered · 3 withdrawn · 4 timed out · 5 declined · 6 not here. `version --json` reports
+the protocol (2).
 
 ## The iPhone app (`ios/`)
 

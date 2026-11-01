@@ -14,7 +14,6 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
-	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -33,33 +32,7 @@ type Device struct {
 	PublicKey   []byte      `json:"public_key"` // X9.63 uncompressed P-256 point (Secure Enclave)
 	TokenSHA256 []byte      `json:"token_sha256"`
 	PairedAt    time.Time   `json:"paired_at"`
-	Keys        []YubiKey   `json:"yubikeys"`       // the YubiKeys registered with this phone at pairing
 	Push        *PushConfig `json:"push,omitempty"` // set only if the phone opted in to notifications
-}
-
-// YubiKey is a key the phone registered by tapping it during pairing. Only requests for a
-// registered key go to the phone; any other key is answered "not here" at once, the way
-// age-plugin-yubikey skips an absent key (sops starts the plugin once per recipient).
-type YubiKey struct {
-	Serial    uint32 `json:"serial"`
-	Slot      uint8  `json:"slot"`
-	Recipient []byte `json:"recipient"` // 33-byte SEC1 compressed P-256 point
-}
-
-func (k YubiKey) tag() string {
-	sum := sha256.Sum256(k.Recipient)
-	return base64.RawStdEncoding.EncodeToString(sum[:4])
-}
-
-// registeredTags is the set of identity tags the paired phones can answer for.
-func (c *Config) registeredTags() map[string]bool {
-	tags := map[string]bool{}
-	for _, d := range c.Devices {
-		for _, k := range d.Keys {
-			tags[k.tag()] = true
-		}
-	}
-	return tags
 }
 
 type Config struct {

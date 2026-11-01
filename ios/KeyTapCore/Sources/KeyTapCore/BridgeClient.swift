@@ -8,7 +8,6 @@ public struct PairingLink: Equatable, Sendable {
     public let pin: Data
     public let code: String
     public let name: String
-    public let recipient: String?
 
     public init?(_ s: String) {
         guard let c = URLComponents(string: s.trimmingCharacters(in: .whitespacesAndNewlines)),
@@ -20,7 +19,6 @@ public struct PairingLink: Equatable, Sendable {
         self.pin = pin
         self.code = code
         self.name = q["name"].flatMap { $0.isEmpty ? nil : $0 } ?? host
-        self.recipient = q["recipient"].flatMap { $0.isEmpty ? nil : $0 }
     }
 }
 
@@ -30,6 +28,8 @@ public enum PollState: Sendable, Equatable {
     /// Nothing is listening — no decrypt is waiting on the workstation (the normal resting state).
     case notListening
     case pending(ApprovalRequest, Data)
+    /// The request (id) was withdrawn or its chain ended on the computer, and why ("answered elsewhere").
+    case ended(id: String, reason: String)
 }
 
 public enum BridgeError: Error, LocalizedError, Equatable {
@@ -103,6 +103,9 @@ public final class BridgeClient: NSObject, URLSessionDelegate, @unchecked Sendab
             let (data, status) = try await perform(request("/v1/pending"))
             switch status {
             case 204: return .idle
+            case 410:
+                let obj = (try? JSONDecoder().decode([String: String].self, from: data)) ?? [:]
+                return .ended(id: obj["id"] ?? "", reason: obj["reason"] ?? "ended on the computer")
             case 200:
                 let req = try Self.decoder.decode(ApprovalRequest.self, from: data)
                 return .pending(req, data)
@@ -116,18 +119,6 @@ public final class BridgeClient: NSObject, URLSessionDelegate, @unchecked Sendab
     public func send(_ answer: ApprovalAnswer) async throws {
         let (data, status) = try await perform(request("/v1/answer", method: "POST", body: try JSONEncoder().encode(answer)))
         guard status == 204 else { throw BridgeError.status(status, String(decoding: data.prefix(200), as: UTF8.self)) }
-    }
-
-    /// A YubiKey registered at pairing: the bridge then answers only for these keys.
-    public struct RegisteredKey: Codable, Sendable, Equatable {
-        public let serial: UInt32
-        public let slot: UInt8
-        public let recipient: String // base64, 33 bytes compressed
-        public init(serial: UInt32, slot: UInt8, recipient: Data) {
-            self.serial = serial
-            self.slot = slot
-            self.recipient = recipient.base64Raw
-        }
     }
 
     /// Notification settings the phone hands to its computer (opt-in): the APNs device token and
@@ -145,14 +136,13 @@ public final class BridgeClient: NSObject, URLSessionDelegate, @unchecked Sendab
         let code: String
         let device_name: String
         let public_key: String
-        let yubikeys: [RegisteredKey]
         let push: PushSettings?
     }
 
-    public func pair(code: String, deviceName: String, publicKey: Data, yubikeys: [RegisteredKey] = [],
+    public func pair(code: String, deviceName: String, publicKey: Data,
                      push: PushSettings? = nil) async throws -> (token: String, bridgeName: String, notifyKey: Data?) {
         let body = try JSONEncoder().encode(PairBody(code: code, device_name: deviceName,
-                                                     public_key: publicKey.base64Raw, yubikeys: yubikeys, push: push))
+                                                     public_key: publicKey.base64Raw, push: push))
         let (data, status) = try await perform(request("/v1/pair", method: "POST", body: body))
         guard status == 200, let obj = try? JSONDecoder().decode([String: String].self, from: data),
               let token = obj["token"] else {

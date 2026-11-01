@@ -8,13 +8,11 @@ import UserNotifications
 /// A paired computer. Kept in the keychain as ThisDeviceOnly, like its token: UserDefaults would go
 /// into iCloud and device backups, and nothing about a workstation may leave the phone.
 /// One phone can be paired with several computers (laptop, desktop, …); each has its own token.
+/// Nothing about YubiKeys: the computer sends its key list with every request (KeyTap 1.1).
 struct Pairing: Codable, Equatable, Identifiable {
     var host: String
     var pin: Data
     var name: String
-    var recipient: String?
-    /// The YubiKeys registered with the computer at pairing (serial, slot, recipient).
-    var keys: [BridgeClient.RegisteredKey]?
 
     /// The computer's identity: the SHA-256 of its bridge certificate (the pin), in hex.
     var id: String { pin.map { String(format: "%02x", $0) }.joined() }
@@ -36,6 +34,12 @@ final class AppModel {
     /// The computer the shown request came from.
     private(set) var requestFrom: Pairing?
     private var requestBytes = Data()
+    /// The request of the shown chain that is answered next (a continuation after "held"). nil = the shown one.
+    private var chainRequest: (ApprovalRequest, Data)?
+    /// A tap is in progress (the NFC sheet is up): the poller leaves the chain to it.
+    private(set) var approving = false
+    /// Why the last request went away on its own ("answered elsewhere"), shown on the home screen.
+    var notice: String?
     private var answered: Set<String> = []
     private var pollTask: Task<Void, Never>?
 
@@ -105,7 +109,14 @@ final class AppModel {
     /// The pairings from the keychain. A phone from KeyTap 1.0 had one pairing under "pairing" with its token
     /// under "bridge-token" (and its notification key under "notify-key"): moved to the per-computer layout once.
     private static func loadPairings() -> [Pairing] {
-        if let d = Keychain.get("pairings"), let list = try? JSONDecoder().decode([Pairing].self, from: d) { return list }
+        if let d = Keychain.get("pairings"), let list = try? JSONDecoder().decode([Pairing].self, from: d) {
+            // KeyTap 1.1 stores no YubiKey list: rewrite a 1.0 / early-1.1 entry without it (keys, recipient).
+            let raw = String(decoding: d, as: UTF8.self)
+            if raw.contains("\"keys\"") || raw.contains("\"recipient\""), let clean = try? JSONEncoder().encode(list) {
+                Keychain.set("pairings", clean)
+            }
+            return list
+        }
         guard let d = Keychain.get("pairing"), let p = try? JSONDecoder().decode(Pairing.self, from: d) else { return [] }
         if let tok = Keychain.get("bridge-token") { Keychain.set(p.tokenAccount, tok) }
         SharedKeychain.migrateLegacyNotifyKey(to: p.id)
@@ -136,14 +147,13 @@ final class AppModel {
     // MARK: pairing
 
     /// Pairs with a computer. The same computer again (same certificate) replaces its pairing; any other is added.
-    func pair(with link: PairingLink, keys: [BridgeClient.RegisteredKey]) async throws {
+    func pair(with link: PairingLink) async throws {
         guard let signer = try DeviceKey.load() else { return }
         let c = BridgeClient(host: link.host, pin: link.pin, token: nil)
         let push = pushSettings
         let (token, bridgeName, notifyKey) = try await c.pair(code: link.code, deviceName: UIDevice.current.name,
-                                                              publicKey: signer.publicKeyX963, yubikeys: keys, push: push)
-        let p = Pairing(host: link.host, pin: link.pin, name: bridgeName.isEmpty ? link.name : bridgeName,
-                        recipient: link.recipient, keys: keys)
+                                                              publicKey: signer.publicKeyX963, push: push)
+        let p = Pairing(host: link.host, pin: link.pin, name: bridgeName.isEmpty ? link.name : bridgeName)
         guard Keychain.set(p.tokenAccount, Data(token.utf8)) else { throw KeychainError.writeFailed }
         SharedKeychain.setNotifyKey(push == nil ? nil : notifyKey, for: p.id)
         if notificationsWanted && push == nil { pushPending.insert(p.id) } else { pushPending.remove(p.id) }
@@ -167,19 +177,29 @@ final class AppModel {
         if pairings.isEmpty { forget() }
     }
 
-    /// Reads the YubiKey's serial and the slot's public key over NFC — no PIN, nothing written.
-    func readYubiKey(slot: UInt8) async throws -> BridgeClient.RegisteredKey {
-        if useSoftwareKey {
-            let k = try SoftwareTestKey.load()
-            return .init(serial: SoftwareAgeKey.fakeSerial, slot: SoftwareAgeKey.slot, recipient: k.recipientPoint)
+    /// "Not sure which key?": reads the tapped YubiKey's serial over NFC — no PIN, nothing sent to the key.
+    func identifyKey() async throws -> UInt32? {
+        if useSoftwareKey { return SoftwareAgeKey.fakeSerial }
+        return try await NFCPIVSession.run(prompt: "Hold your YubiKey to the top of the iPhone.", done: "YubiKey read.") { t in
+            try await YubiKeyTap(t).serial()
         }
-        let info = try await NFCPIVSession.run(prompt: "Hold your YubiKey to the top of the iPhone.", done: "YubiKey read.") { t in
+    }
+
+    /// Unblocks a blocked PIV PIN with the PUK and sets a new PIN. With `expect`, a different key is refused
+    /// before the PUK is sent.
+    func unblockPIN(puk: String, newPIN: String, expect: UInt32?, label: @escaping @Sendable (UInt32) -> String) async throws {
+        try await NFCPIVSession.run(prompt: "Hold your YubiKey to the top of the iPhone.", done: "PIN changed.") { t in
             let piv = PIV(t)
             try await piv.select()
-            return try await piv.info(slot: slot)
+            if let expect, let s = try await piv.serial(), s != expect {
+                throw TapError.otherKeyTapped(tapped: s, tappedLabel: label(s), picked: expect, pickedLabel: label(expect))
+            }
+            do {
+                try await piv.unblockPIN(puk: puk, newPIN: newPIN)
+            } catch PIVError.wrongPUK(let n) where n < 0 {
+                throw PIVError.wrongPUK(retriesLeft: (try? await piv.pukRetries()) ?? -1)
+            }
         }
-        guard let point = info.publicKey else { throw PIVError.slotEmpty }
-        return .init(serial: info.serial ?? 0, slot: slot, recipient: try PivP256.compress(x963: point))
     }
 
     /// The phone-only test: PIN + tap + a key agreement checked against software. No computer involved.
@@ -187,9 +207,8 @@ final class AppModel {
         if useSoftwareKey {
             return PIV.Info(firmware: "software", serial: SoftwareAgeKey.fakeSerial)
         }
-        let fallback = pairing?.recipient.flatMap(PivP256.parseRecipient)
         return try await NFCPIVSession.run(prompt: "Hold your YubiKey to the top of the iPhone.", done: "Test passed.") { t in
-            try await PIV(t).selfTest(slot: slot, pin: pin, fallbackRecipient: fallback)
+            try await PIV(t).selfTest(slot: slot, pin: pin)
         }
     }
 
@@ -208,6 +227,7 @@ final class AppModel {
         dryRunPassed = false
         request = nil
         requestFrom = nil
+        chainRequest = nil
     }
 
     // MARK: polling — foreground only; the bridge's endpoint exists only while a decrypt waits
@@ -246,17 +266,32 @@ final class AppModel {
             case .idle:
                 links[p.id] = .waiting
                 lastContact = .now
-                if requestFrom?.id == p.id { request = nil; requestFrom = nil }
+                // between the links of a chain (after "held") the computer has nothing open for a moment
+                if requestFrom?.id == p.id, !approving, chainRequest == nil { clearRequest() }
                 await syncPushIfNeeded(client, p)
             case .notListening:
                 links[p.id] = .notListening
-                if requestFrom?.id == p.id { request = nil; requestFrom = nil }
+                if requestFrom?.id == p.id, !approving { clearRequest() }
+            case .ended(let id, let reason):
+                links[p.id] = .waiting
+                lastContact = .now
+                guard requestFrom?.id == p.id, let shown = request,
+                      id.isEmpty || id == shown.id || id == chainRequest?.0.id else { break }
+                if approving {
+                    NFCPIVSession.cancelActive(message: "Withdrawn: \(reason).") // the tap's own wait sees it too
+                } else {
+                    notice = Self.noticeText(reason)
+                    answered.insert(shown.id)
+                    clearRequest()
+                }
             case .pending(let req, let bytes):
                 links[p.id] = .waiting
                 lastContact = .now
                 await syncPushIfNeeded(client, p)
+                if req.continues != nil { break } // a chain link: the tap in progress fetches it itself
                 let free = request == nil || requestFrom?.id == p.id
-                if free, request?.id != req.id, !answered.contains(req.id), req.expiresAt > .now {
+                if free, !approving, request?.id != req.id, !answered.contains(req.id), req.expiresAt > .now {
+                    chainRequest = nil
                     requestBytes = bytes
                     requestFrom = p
                     request = req
@@ -267,11 +302,23 @@ final class AppModel {
         }
     }
 
+    private func clearRequest() {
+        if let id = request?.id { Task { await Notifications.remove(requestID: id) } }
+        request = nil
+        requestFrom = nil
+        chainRequest = nil
+    }
+
+    static func noticeText(_ reason: String) -> String {
+        reason.contains("answered elsewhere") ? "The last request was answered on another computer."
+            : "The last request ended on the computer: \(reason)."
+    }
+
     // MARK: answering
 
     /// PIN + tap: the whole PIV conversation runs inside one NFC session. The PIN is passed
     /// straight through to VERIFY and is never stored.
-    func approve(pin: String) async throws {
+    func approve(pin: String, picked: UInt32?) async throws {
         if isDemo, let req = request, req.isSSH, let sign = req.ssh, let fido = demoFIDO {
             let a = try await SSHSigner.sign(sign, pin: Self.demoPIN, transport: fido)
             demoResult = a.flags & 0x04 != 0
@@ -290,67 +337,48 @@ final class AppModel {
             request = nil
             return
         }
-        guard let req = request, let from = requestFrom, let client = client(for: from), let signer = try DeviceKey.load() else { return }
-        defer { Task { await Notifications.remove(requestID: req.id) } }
+        guard let shown = request, let from = requestFrom, let client = client(for: from), let signer = try DeviceKey.load() else { return }
+        let (req, bytes) = chainRequest ?? (shown, requestBytes)
         if req.isUnknownKind { throw ApprovalError.unsupported }
-        if req.isSSH, let sign = req.ssh {
-            guard !useSoftwareKey else { throw ApprovalError.sshNeedsYubiKey }
-            // FIDO2 over NFC: select the FIDO applet, PIN → token, getAssertion. The PIN goes only to the key.
-            let assertion = try await NFCPIVSession.run(prompt: "Hold your YubiKey to the top of the iPhone.", done: "Signed.") { t in
-                try await SSHSigner.sign(sign, pin: pin, transport: t)
-            }
-            try await client.send(try Approver.answerSSH(req, requestBytes: requestBytes, assertion: assertion, signer: signer))
-            answered.insert(req.id)
-            request = nil
-            return
+        if useSoftwareKey && req.isSSH { throw ApprovalError.sshNeedsYubiKey }
+        let link = BridgeChainLink(client: client)
+        let onRequest: @Sendable (ApprovalRequest, Data) async -> Void = { [weak self] r, b in
+            await MainActor.run { self?.chainRequest = (r, b) }
         }
-        let configured = from.recipient.flatMap(PivP256.parseRecipient)
-        if req.isTest {
-            let proof: String
+        approving = true
+        defer { approving = false }
+        do {
+            let outcome: TapOutcome
             if useSoftwareKey {
-                proof = try await Approver.probe(req, with: SoftwareTestKey.load())
+                let tap = SoftwareTap(serial: SoftwareAgeKey.fakeSerial, age: try SoftwareTestKey.load(), fido: nil)
+                outcome = try await TapChain.run(request: req, bytes: bytes, picked: nil, pin: pin, key: tap, link: link,
+                                                 signer: signer, onRequest: onRequest)
             } else {
-                proof = try await NFCPIVSession.run(prompt: "Hold your YubiKey to the top of the iPhone.", done: "Dry run answered.") { t in
-                    let piv = PIV(t)
-                    try await piv.select()
-                    try await piv.verify(pin: pin)
-                    return try await Approver.probe(req, with: YubiKeyAgeKey(piv: piv, configuredRecipient: configured))
+                let done = req.isTest ? "Dry run answered." : req.isSSH ? "Signed." : "Approved."
+                outcome = try await NFCPIVSession.run(prompt: "Hold your YubiKey to the top of the iPhone.", done: done) { t in
+                    try await TapChain.run(request: req, bytes: bytes, picked: picked, pin: pin, key: YubiKeyTap(t), link: link,
+                                           signer: signer, onRequest: onRequest)
                 }
             }
-            try await client.send(try Approver.answerProbe(req, requestBytes: requestBytes, proof: proof, signer: signer))
-            dryRunPassed = true
-            answered.insert(req.id)
-            request = nil
-            return
-        }
-        let results: [ApprovalResult]
-        if useSoftwareKey {
-            results = try await Approver.unwrap(req, with: SoftwareTestKey.load())
-        } else {
-            results = try await NFCPIVSession.run(
-                prompt: "Hold your YubiKey to the top of the iPhone.",
-                done: "Approved."
-            ) { transport in
-                let piv = PIV(transport)
-                try await piv.select()
-                try await piv.verify(pin: pin)
-                let key = YubiKeyAgeKey(piv: piv, configuredRecipient: configured)
-                let out = try await Approver.unwrap(req, with: key)
-                if out.allSatisfy({ $0.fileKey == nil }) {
-                    let tapped = try await key.serial().map { "YubiKey \($0)" } ?? "This YubiKey"
-                    let wanted = req.identities.map { String($0.serial) }.joined(separator: ", ")
-                    throw ApprovalError.nothingUnwrapped("\(tapped) is not one of this request's keys (\(wanted)).")
-                }
-                return out
+            if outcome == .dryRun { dryRunPassed = true }
+            answered.insert(shown.id)
+            clearRequest()
+        } catch let e as TapError {
+            switch e {
+            case .withdrawn(let why), .notThisKey(let why):
+                // the computer ended the chain: this request is over
+                notice = e == .withdrawn(why) ? Self.noticeText(why) : why
+                answered.insert(shown.id)
+                clearRequest()
+            default: break
             }
+            throw e
         }
-        try await client.send(try Approver.answer(req, requestBytes: requestBytes, results: results, signer: signer))
-        answered.insert(req.id)
-        request = nil
     }
 
     func decline() async throws {
         if let id = request?.id { Task { await Notifications.remove(requestID: id) } }
+        let pending = chainRequest
         if isDemo, let req = request {
             demoResult = req.isSSH ? "Declined. The SSH login would fail with \"declined on the phone\"."
                                    : "Declined. The computer's decrypt would fail with \"declined on the phone\"."
@@ -358,10 +386,11 @@ final class AppModel {
             request = nil
             return
         }
-        guard let req = request, let from = requestFrom, let client = client(for: from), let signer = try DeviceKey.load() else { return }
-        try await client.send(try Approver.decline(req, requestBytes: requestBytes, signer: signer))
-        answered.insert(req.id)
-        request = nil
+        guard let shown = request, let from = requestFrom, let client = client(for: from), let signer = try DeviceKey.load() else { return }
+        let (req, bytes) = pending ?? (shown, requestBytes)
+        try await client.send(try Approver.decline(req, requestBytes: bytes, signer: signer))
+        answered.insert(shown.id)
+        clearRequest()
     }
 
     func setNotifications(_ on: Bool) async {
@@ -432,6 +461,11 @@ final class AppModel {
         demoFIDO = SoftFIDOAuthenticator(credential: .init(rpId: "ssh:"), pin: Self.demoPIN)
     }
 
+    /// The demo computer's key list (the demo key is the first).
+    private static let demoKeys: [[String: Any]] = [
+        ["serial": SoftwareAgeKey.fakeSerial, "label": "everyday"], ["serial": 2, "label": "spare"], ["serial": 3, "label": "safe"],
+    ]
+
     /// The demo key's FIDO2 PIN (the demo needs no PIN typed; this stands in for the one on a real key).
     private static let demoPIN = "123456"
 
@@ -463,6 +497,7 @@ final class AppModel {
             "command": "sops -d secrets/production.enc.yaml", "cwd": "/Users/you/projects/infrastructure",
             "note": "Renewing the staging TLS certificates before tonight's release.",
             "identities": [["serial": SoftwareAgeKey.fakeSerial, "slot": Int(SoftwareAgeKey.slot), "tag": tag.base64Raw]],
+            "keys": Self.demoKeys, "default": SoftwareAgeKey.fakeSerial,
             "files": [["index": 0, "stanzas": [["stanza_index": 0, "tag": tag.base64Raw, "epk": epk.base64Raw, "body": body.base64Raw]]]],
         ]
         guard let bytes = try? JSONSerialization.data(withJSONObject: json),
@@ -488,6 +523,7 @@ final class AppModel {
             "command": "ssh deploy@build-server.example", "cwd": "/Users/you/projects/infrastructure",
             "note": "Rolling out tonight's release to the build server.",
             "identities": [], "files": [],
+            "keys": Self.demoKeys, "default": SoftwareAgeKey.fakeSerial,
             "ssh": [
                 "application": cred.rpId, "credential_id": cred.id.base64Raw,
                 "client_data_hash": Data(SHA256.hash(data: data)).base64Raw, "algorithm": "ed25519",
@@ -502,28 +538,14 @@ final class AppModel {
     }
 
     func dismissExpired() {
-        if let r = request { answered.insert(r.id); Task { await Notifications.remove(requestID: r.id) } }
-        request = nil
-        requestFrom = nil
+        if let r = request { answered.insert(r.id) }
+        clearRequest()
     }
 }
 
 enum KeychainError: Error, LocalizedError {
     case writeFailed
     var errorDescription: String? { "Could not store the key in the keychain." }
-}
-
-enum ApprovalError: Error, LocalizedError {
-    case nothingUnwrapped(String)
-    case unsupported
-    case sshNeedsYubiKey
-    var errorDescription: String? {
-        switch self {
-        case .nothingUnwrapped(let why): why
-        case .unsupported: "This request needs a newer version of KeyTap. Update the app from the App Store."
-        case .sshNeedsYubiKey: "SSH requests need a real YubiKey; the software test key handles decryptions only."
-        }
-    }
 }
 
 /// Debug-only software key, so the full flow runs in the simulator.

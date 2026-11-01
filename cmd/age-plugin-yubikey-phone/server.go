@@ -4,7 +4,7 @@ package main
 // (or while `pair` runs): the phone CONNECTS OUT to it, and a refused connection simply means
 // "nothing to approve". The bridge never connects to the phone.
 //
-//   GET  /v1/pending   Bearer → 200 the request JSON | 204 nothing pending
+//   GET  /v1/pending   Bearer → 200 the request JSON | 204 nothing pending | 410 {"id","reason"} the session ended
 //   POST /v1/answer    Bearer + Secure-Enclave signature over the displayed request bytes
 //   POST /v1/pair      one-time pairing code → registers the device key, returns its token (pair mode only)
 
@@ -36,9 +36,15 @@ type pending struct {
 
 type server struct {
 	cfg     *Config
-	mu      sync.Mutex
-	pending *pending
+	session *phoneSession                                // nil in pair mode
 	pair    func(w http.ResponseWriter, r *http.Request) // nil outside pair mode
+}
+
+func (s *server) current() (*pending, string, string) {
+	if s.session == nil {
+		return nil, "", ""
+	}
+	return s.session.current()
 }
 
 func b64any(s string) ([]byte, error) {
@@ -70,15 +76,20 @@ func (s *server) handler() http.Handler {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		s.mu.Lock()
-		p := s.pending
-		s.mu.Unlock()
+		p, endID, reason := s.current()
+		w.Header().Set("Cache-Control", "no-store")
+		if p == nil && reason != "" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusGone)
+			json.NewEncoder(w).Encode(map[string]string{"id": endID, "reason": reason})
+			return
+		}
 		if p == nil || time.Now().After(p.req.ExpiresAt) {
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
+		s.session.fetched(p.req.ID)
 		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Cache-Control", "no-store")
 		w.Write(p.bytes)
 	})
 	mux.HandleFunc("POST /v1/answer", func(w http.ResponseWriter, r *http.Request) {
@@ -92,9 +103,7 @@ func (s *server) handler() http.Handler {
 			http.Error(w, "bad answer", http.StatusBadRequest)
 			return
 		}
-		s.mu.Lock()
-		p := s.pending
-		s.mu.Unlock()
+		p, _, _ := s.current()
 		switch {
 		case p == nil || p.req.ID != a.ID:
 			http.Error(w, "no such request", http.StatusNotFound)
@@ -108,7 +117,11 @@ func (s *server) handler() http.Handler {
 			http.Error(w, "signature rejected", http.StatusForbidden)
 			return
 		}
-		if p.check != nil && !a.Declined {
+		if a.Held != nil && (a.Declined || len(a.Results) > 0 || a.SSH != nil || a.Proof != "") {
+			http.Error(w, "a held answer carries nothing else", http.StatusBadRequest)
+			return
+		}
+		if p.check != nil && !a.Declined && a.Held == nil {
 			if err := p.check(&a); err != nil {
 				logf("request %s: dry-run proof rejected: %v", p.req.Code, err)
 				http.Error(w, err.Error(), http.StatusUnprocessableEntity)
@@ -121,7 +134,11 @@ func (s *server) handler() http.Handler {
 			http.Error(w, "already answered", http.StatusConflict)
 			return
 		}
-		logf("request %s: answered by %q (declined=%v, results=%d)", p.req.Code, dev.Name, a.Declined, len(a.Results))
+		if a.Held != nil {
+			logf("request %s: %q holds YubiKey %d, which this request is not for", p.req.Code, dev.Name, a.Held.Serial)
+		} else {
+			logf("request %s: answered by %q (declined=%v, results=%d)", p.req.Code, dev.Name, a.Declined, len(a.Results))
+		}
 		w.WriteHeader(http.StatusNoContent)
 	})
 	// The paired phone switches notifications on or off whenever the bridge is listening (a pair,

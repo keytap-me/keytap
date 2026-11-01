@@ -23,7 +23,8 @@ const probeLabel = "keytap-probe-v1"
 
 func runTest(args []string) error {
 	fs := flag.NewFlagSet("test", flag.ExitOnError)
-	serial := fs.Uint("serial", 0, "which registered YubiKey to test (default: the first)")
+	which := fs.String("key", "", "which YubiKey to test: label or serial (default: the last one used, else the first)")
+	serial := fs.Uint("serial", 0, "same as --key SERIAL")
 	note := fs.String("note", os.Getenv("KEYTAP_NOTE"), "a short note shown on the phone (default: $KEYTAP_NOTE)")
 	fs.Parse(args)
 
@@ -31,17 +32,36 @@ func runTest(args []string) error {
 	if err != nil {
 		return err
 	}
-	var key *YubiKey
-	for _, d := range cfg.Devices {
-		for i := range d.Keys {
-			if key == nil && (*serial == 0 || d.Keys[i].Serial == uint32(*serial)) {
-				key = &d.Keys[i]
-			}
+	if *serial != 0 && *which == "" {
+		*which = fmt.Sprint(*serial)
+	}
+	var usable []keyEntry
+	for _, k := range knownKeys() {
+		if len(k.Recipient) == 33 && k.Slot != 0 {
+			usable = append(usable, k)
 		}
 	}
-	if key == nil {
-		return fmt.Errorf("no registered YubiKey to test; pair the phone first (`age-plugin-yubikey-phone pair --host IP`)")
+	if len(usable) == 0 {
+		return fmt.Errorf("no YubiKey with a known age recipient: %s needs age-plugin-yubikey's comments (Serial, Recipient) above each identity", identityFilePath())
 	}
+	var key *keyEntry
+	for i := range usable {
+		k := &usable[i]
+		if (*which == "" && k.Serial == lastKey()) || (*which != "" && (k.Label == *which || fmt.Sprint(k.Serial) == *which)) {
+			key = k
+			break
+		}
+	}
+	if key == nil && *which == "" {
+		key = &usable[0]
+	}
+	if key == nil {
+		return fmt.Errorf("no YubiKey %q in %s", *which, identityFilePath())
+	}
+	tag := func() string {
+		sum := sha256.Sum256(key.Recipient)
+		return base64.RawStdEncoding.EncodeToString(sum[:4])
+	}()
 
 	pub, err := ecdh.P256().NewPublicKey(decompressP256(key.Recipient))
 	if err != nil {
@@ -63,13 +83,15 @@ func runTest(args []string) error {
 		Version: protoVersion,
 		Kind:    "test",
 		Probe: &Probe{
-			Serial: key.Serial, Slot: key.Slot, Tag: key.tag(),
+			Serial: key.Serial, Slot: key.Slot, Tag: tag,
 			EPK: base64.RawStdEncoding.EncodeToString(epk),
 		},
-		Identities: []Identity{{Serial: key.Serial, Slot: key.Slot, Tag: key.tag()}},
+		Identities: []Identity{{Serial: key.Serial, Slot: key.Slot, Tag: tag}},
 		Files:      []File{},
+		Keys:       []KeyInfo{{Serial: key.Serial, Label: keyLabel(knownKeys(), key.Serial)}},
+		Default:    key.Serial,
 	}
-	fmt.Printf("Testing YubiKey %d (slot %#x) through the phone.\n", key.Serial, key.Slot)
+	fmt.Printf("Testing %s (YubiKey %d, slot %#x) through the phone.\n", keyLabel(knownKeys(), key.Serial), key.Serial, key.Slot)
 	// The proof is checked inside the request, so the phone learns the verdict too.
 	check := func(a *Answer) error {
 		mac := hmac.New(sha256.New, wrapKey)
@@ -84,6 +106,7 @@ func runTest(args []string) error {
 	if _, err := askPhone(func(m string) { fmt.Println(m) }, cfg, req, check); err != nil {
 		return err
 	}
+	setLastKey(key.Serial)
 	fmt.Println("✓ Dry run passed: phone reachable, answer signed by the paired phone, YubiKey PIN + tap + key agreement work.")
 	fmt.Println("  Real decrypts will work the same way.")
 	return nil

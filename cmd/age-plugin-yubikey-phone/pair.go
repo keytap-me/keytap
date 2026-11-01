@@ -25,22 +25,16 @@ import (
 )
 
 type pairBody struct {
-	Code       string `json:"code"`
-	DeviceName string `json:"device_name"`
-	PublicKey  string `json:"public_key"` // base64 X9.63 uncompressed P-256 point
-	YubiKeys   []struct {
-		Serial    uint32 `json:"serial"`
-		Slot      uint8  `json:"slot"`
-		Recipient string `json:"recipient"` // base64, 33 bytes compressed
-	} `json:"yubikeys"`
-	Push *pushSettings `json:"push,omitempty"` // optional: notifications through the relay
+	Code       string        `json:"code"`
+	DeviceName string        `json:"device_name"`
+	PublicKey  string        `json:"public_key"`     // base64 X9.63 uncompressed P-256 point
+	Push       *pushSettings `json:"push,omitempty"` // optional: notifications through the relay
 }
 
 func runPair(args []string) error {
 	fs := flag.NewFlagSet("pair", flag.ExitOnError)
 	host := fs.String("host", "", "IP address the iPhone reaches this Mac at (required)")
 	port := fs.String("port", "", "port (default 8743 or the stored one); the listener binds --host only")
-	recipient := fs.String("recipient", "", "age1yubikey1… recipient to show on the phone (optional, public)")
 	nameFlag := fs.String("name", "", "how the phone shows this computer (default: short hostname)")
 	relayFlag := fs.String("push-relay", "", "notification relay for phones that opt in (default "+defaultPushRelay+")")
 	fs.Parse(args)
@@ -83,9 +77,6 @@ func runPair(args []string) error {
 	q.Set("fp", base64.RawURLEncoding.EncodeToString(pin[:]))
 	q.Set("code", code)
 	q.Set("name", name)
-	if *recipient != "" {
-		q.Set("recipient", *recipient)
-	}
 	link := "keytap://pair?" + q.Encode()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
@@ -114,15 +105,6 @@ func runPair(args []string) error {
 			http.Error(w, "pairing code already used", http.StatusConflict)
 			return
 		}
-		var keys []YubiKey
-		for _, k := range b.YubiKeys {
-			r, err := b64any(k.Recipient)
-			if err != nil || len(r) != 33 || decompressP256(r) == nil || k.Slot < 0x82 || k.Slot > 0x95 {
-				http.Error(w, "invalid YubiKey registration", http.StatusBadRequest)
-				return
-			}
-			keys = append(keys, YubiKey{Serial: k.Serial, Slot: k.Slot, Recipient: r})
-		}
 		tok := make([]byte, 32)
 		rand.Read(tok)
 		token := base64.RawURLEncoding.EncodeToString(tok)
@@ -131,7 +113,7 @@ func runPair(args []string) error {
 		if devName == "" || len(devName) > 64 {
 			devName = "iPhone"
 		}
-		dev := Device{Name: devName, PublicKey: pub, TokenSHA256: sum[:], PairedAt: time.Now().UTC(), Keys: keys}
+		dev := Device{Name: devName, PublicKey: pub, TokenSHA256: sum[:], PairedAt: time.Now().UTC()}
 		resp := map[string]string{"token": token, "bridge_name": name}
 		if b.Push.valid() {
 			dev.Push = newPushConfig(b.Push)
@@ -160,15 +142,11 @@ func runPair(args []string) error {
 		}
 		time.Sleep(300 * time.Millisecond) // let the response reach the phone before closing
 		fmt.Printf("Paired %q.\n", d.Name)
-		for _, k := range d.Keys {
-			fmt.Printf("  YubiKey %d, slot %#x: %s\n", k.Serial, k.Slot, bech32Encode("age1yubikey", k.Recipient))
-		}
 		if d.Push != nil {
 			fmt.Printf("  Notifications: on, via %s (end-to-end encrypted)\n", cfg.pushRelay())
 		}
-		if len(d.Keys) > 0 {
-			fmt.Println("Next: `age-plugin-yubikey-phone test` runs a dry run through the phone.")
-		}
+		printKeys()
+		fmt.Println("Next: `age-plugin-yubikey-phone test` runs a dry run through the phone.")
 		return nil
 	case <-ctx.Done():
 		return fmt.Errorf("pairing window closed without a device")
@@ -186,13 +164,11 @@ func runDevices() error {
 	for _, d := range cfg.Devices {
 		sum := sha256.Sum256(d.PublicKey)
 		fmt.Printf("%-24s paired %s  device key %x\n", d.Name, d.PairedAt.Local().Format("2006-01-02 15:04"), sum[:6])
-		for _, k := range d.Keys {
-			fmt.Printf("    YubiKey %d, slot %#x: %s\n", k.Serial, k.Slot, bech32Encode("age1yubikey", k.Recipient))
-		}
 		if d.Push != nil {
 			fmt.Printf("    notifications: on (%s)\n", d.Push.Env)
 		}
 	}
+	printKeys()
 	return nil
 }
 
@@ -212,4 +188,22 @@ func runUnpair(name string) error {
 	}
 	cfg.Devices = kept
 	return cfg.save()
+}
+
+// printKeys lists the YubiKeys this computer offers the phone (keys.conf + the identity file). The phone
+// stores none of them: change the files, and the next request carries the new list.
+func printKeys() {
+	keys := knownKeys()
+	if len(keys) == 0 {
+		fmt.Printf("YubiKeys: none found (%s, %s). Requests then offer only the keys age passes in.\n", keysConfPath(), identityFilePath())
+		return
+	}
+	fmt.Println("YubiKeys offered to the phone:")
+	for _, k := range keys {
+		extra := ""
+		if len(k.SSH) > 0 {
+			extra = fmt.Sprintf(", %d ssh key(s)", len(k.SSH))
+		}
+		fmt.Printf("  %-16s %d%s\n", k.Label, k.Serial, extra)
+	}
 }

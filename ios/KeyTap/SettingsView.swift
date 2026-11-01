@@ -110,20 +110,13 @@ private struct ComputerView: View {
                 LabeledContent("Address", value: pairing.host)
                 LabeledContent("Certificate", value: pairing.pin.prefix(6).map { String(format: "%02x", $0) }.joined())
                 LabeledContent("Status", value: status)
-                if let r = pairing.recipient {
-                    LabeledContent("Recipient") { Text(r).font(.caption2.monospaced()).lineLimit(1).truncationMode(.middle) }
-                }
             }
-            if let keys = pairing.keys, !keys.isEmpty {
-                Section {
-                    ForEach(keys, id: \.serial) { k in
-                        LabeledContent("YubiKey \(k.serial)", value: "Retired slot \(Int(k.slot) - 0x81)")
-                    }
-                } header: {
-                    Text("Registered YubiKeys")
-                } footer: {
-                    Text("For decryptions, this computer asks only about these keys. SSH sign-ins work with any YubiKey that holds the SSH key. To change the list, pair this computer again with the keys at hand.")
-                }
+            Section {
+                Label("Sent with each request", systemImage: "key.horizontal")
+            } header: {
+                Text("YubiKeys")
+            } footer: {
+                Text("\(pairing.name) keeps the list of your YubiKeys and sends it with every request. This iPhone stores nothing about them, so adding or dropping a key needs no change here.")
             }
             Section {
                 Button("Remove \(pairing.name)", role: .destructive) { confirmRemove = true }

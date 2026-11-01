@@ -11,7 +11,16 @@ struct RequestView: View {
     @State private var busy = false
     @State private var error: String?
     @State private var showCommand = false
+    /// The key the PIN is for. Preselected from the computer's default (the key last used there); the phone
+    /// stores nothing. Tapping a different key sends no PIN.
+    @State private var picked: UInt32?
+    @State private var lastTry = false
+    @State private var pinBlocked = false
+    @State private var showPUK = false
     @FocusState private var pinFocused: Bool
+
+    private var keys: [ApprovalRequest.KeyInfo] { request.offeredKeys }
+    private var pickedLabel: String? { picked.map { request.label(of: $0) } }
 
     var body: some View {
         NavigationStack {
@@ -90,7 +99,14 @@ struct RequestView: View {
                         }
                     }
                     if let error {
-                        Section { Text(error).foregroundStyle(.red).font(.callout) }
+                        Section {
+                            Label(error, systemImage: lastTry ? "exclamationmark.octagon.fill" : "exclamationmark.triangle")
+                                .foregroundStyle(.red)
+                                .font(lastTry ? .callout.weight(.semibold) : .callout)
+                            if pinBlocked && !request.isSSH {
+                                Button("Unblock the PIN with the PUK", systemImage: "lock.open") { showPUK = true }
+                            }
+                        }
                     }
                 }
                 .listSectionSpacing(.compact)
@@ -111,7 +127,18 @@ struct RequestView: View {
                     }
                 }
             }
-            .onAppear { pinFocused = !model.approvesInSoftware }
+            .onAppear {
+                pinFocused = !model.approvesInSoftware
+                if picked == nil { picked = request.defaultKey ?? keys.first?.serial }
+            }
+            .sheet(isPresented: $showPUK) {
+                PUKSheet(serial: picked, label: { request.label(of: $0) }) {
+                    showPUK = false
+                    pinBlocked = false
+                    error = "PIN changed. Enter the new PIN and approve."
+                }
+                .environment(model)
+            }
         }
     }
 
@@ -133,14 +160,62 @@ struct RequestView: View {
         .accessibilityHint(showCommand ? "Shows less" : "Shows the full command")
     }
 
+    private var pinPrompt: String {
+        let kind = request.isSSH ? "FIDO2 PIN" : "PIN"
+        return pickedLabel.map { "\(kind) of \($0)" } ?? "YubiKey \(kind)"
+    }
+
+    /// Which key the PIN is for: the computer's list, its default preselected. A single key needs no menu.
+    @ViewBuilder private var keyPicker: some View {
+        HStack {
+            if keys.count > 1 {
+                Menu {
+                    Picker("YubiKey", selection: Binding(get: { picked ?? 0 }, set: { picked = $0; error = nil; lastTry = false })) {
+                        ForEach(keys, id: \.serial) { k in Text("\(k.label) · \(String(k.serial))").tag(k.serial) }
+                    }
+                } label: {
+                    Label(pickedLabel ?? "Pick the YubiKey", systemImage: "key.horizontal")
+                        .font(.callout.weight(.medium))
+                }
+                .accessibilityIdentifier("key-picker")
+            } else if let l = pickedLabel {
+                Label(l, systemImage: "key.horizontal").font(.callout.weight(.medium))
+            }
+            Spacer()
+            Button("Not sure? Tap to identify") { Task { await identify() } }
+                .font(.caption)
+                .disabled(busy)
+                .accessibilityIdentifier("identify")
+        }
+    }
+
+    private func identify() async {
+        busy = true
+        defer { busy = false }
+        do {
+            if let s = try await model.identifyKey() {
+                picked = s
+                error = keys.contains { $0.serial == s } ? nil
+                    : "\(request.label(of: s)) is not one of this computer's keys. It can still try, if the request is for it."
+                pinFocused = true
+            }
+        } catch NFCError.cancelled {
+        } catch {
+            self.error = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        }
+    }
+
     /// SSH uses the YubiKey's FIDO2 PIN (4–63 characters, any), decryptions its PIV PIN (6–8 digits or letters).
     private var pinValid: Bool { request.isSSH ? (4...63).contains(pin.count) : (6...8).contains(pin.count) }
 
     /// PIN + approve, always on screen above the keyboard.
     private func actions(left: Int) -> some View {
         VStack(spacing: 10) {
+            if !model.approvesInSoftware && !model.isDemo {
+                keyPicker
+            }
             if !model.approvesInSoftware {
-                SecureField(request.isSSH ? "YubiKey FIDO2 PIN" : "YubiKey PIN", text: $pin)
+                SecureField(pinPrompt, text: $pin)
                     .keyboardType(request.isSSH ? .asciiCapable : .numberPad)
                     .textContentType(.oneTimeCode)
                     .textInputAutocapitalization(.never)
@@ -165,7 +240,8 @@ struct RequestView: View {
             .disabled(busy || left <= 0 || request.isUnknownKind || (!model.approvesInSoftware && !pinValid))
             .accessibilityIdentifier("approve")
             if !model.approvesInSoftware {
-                Text("Then hold your YubiKey to the top of the iPhone. The PIN goes only to the key.")
+                Text(pickedLabel.map { "Then hold \($0) to the top of the iPhone. The PIN goes only to that key — another key gets no PIN." }
+                     ?? "Then hold your YubiKey to the top of the iPhone. The PIN goes only to the key.")
                     .font(.caption2).foregroundStyle(.secondary).multilineTextAlignment(.center)
             }
         }
@@ -178,12 +254,33 @@ struct RequestView: View {
     private func approve() async {
         busy = true
         error = nil
+        lastTry = false
         let p = pin
         pin = ""
         defer { busy = false }
         do {
-            try await model.approve(pin: p)
+            try await model.approve(pin: p, picked: picked)
         } catch NFCError.cancelled {
+        } catch let TapError.otherKeyTapped(tapped, tappedLabel, _, pickedLabel) {
+            // No PIN went anywhere. Switch the picker to the key that was tapped, ask for its PIN.
+            picked = tapped
+            error = "That was \(tappedLabel), not \(pickedLabel) — no PIN was sent. Enter the PIN of \(tappedLabel), or pick \(pickedLabel) again."
+            pinFocused = true
+        } catch PIVError.wrongPIN(let n) {
+            lastTry = n == 1
+            error = n == 1 ? "Wrong PIN — 1 try left on \(pickedLabel ?? "this key"). One more wrong PIN blocks it; then only the PUK unblocks it."
+                : PIVError.wrongPIN(retriesLeft: n).errorDescription
+            pinFocused = true
+        } catch PIVError.pinBlocked {
+            pinBlocked = true
+            error = "The PIN of \(pickedLabel ?? "this YubiKey") is blocked. Unblock it with its PUK and set a new PIN."
+        } catch CTAPError.wrongPIN(let n) {
+            lastTry = n == 1
+            error = n == 1 ? "Wrong FIDO2 PIN — 1 try left on \(pickedLabel ?? "this key"). One more blocks it, and a blocked FIDO2 PIN can only be fixed by resetting FIDO2, which deletes the SSH keys on it."
+                : CTAPError.wrongPIN(retriesLeft: n).errorDescription
+            pinFocused = true
+        } catch CTAPError.pinBlocked {
+            error = "The FIDO2 PIN of \(pickedLabel ?? "this YubiKey") is blocked. Only a FIDO2 reset fixes that, and a reset deletes the SSH keys on it — KeyTap never resets a key. Follow your recovery procedure, or use another of your keys."
         } catch {
             self.error = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
@@ -218,5 +315,67 @@ private struct PathRow: View {
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(path)
+    }
+}
+
+/// PIN blocked → PUK + a new PIN, on the same key (checked by serial before the PUK is sent).
+struct PUKSheet: View {
+    @Environment(AppModel.self) private var model
+    let serial: UInt32?
+    let label: @Sendable (UInt32) -> String
+    let done: () -> Void
+    @State private var puk = ""
+    @State private var newPIN = ""
+    @State private var again = ""
+    @State private var busy = false
+    @State private var error: String?
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    SecureField("PUK", text: $puk).keyboardType(.asciiCapable).textContentType(.oneTimeCode)
+                        .textInputAutocapitalization(.never).autocorrectionDisabled()
+                } footer: {
+                    Text("The PUK of \(serial.map(label) ?? "your YubiKey") — 6 to 8 characters, set when the key was prepared. Three wrong PUKs block it for good; then the PIV keys on it can only be replaced, not recovered.")
+                }
+                Section {
+                    SecureField("New PIN", text: $newPIN).keyboardType(.asciiCapable).textContentType(.oneTimeCode)
+                    SecureField("New PIN again", text: $again).keyboardType(.asciiCapable).textContentType(.oneTimeCode)
+                } footer: {
+                    Text("6 to 8 characters. Goes only to the YubiKey; nothing is stored.")
+                }
+                if let error { Section { Text(error).foregroundStyle(.red) } }
+                Section {
+                    Button {
+                        Task { await run() }
+                    } label: {
+                        HStack { Text("Unblock with YubiKey"); Spacer(); if busy { ProgressView() } }
+                    }
+                    .disabled(busy || !(6...8).contains(puk.count) || !(6...8).contains(newPIN.count) || newPIN != again)
+                }
+            }
+            .navigationTitle("Unblock PIN")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
+        }
+    }
+
+    private func run() async {
+        busy = true
+        error = nil
+        let (k, n) = (puk, newPIN)
+        puk = ""
+        defer { busy = false }
+        do {
+            try await model.unblockPIN(puk: k, newPIN: n, expect: serial, label: label)
+            newPIN = ""
+            again = ""
+            done()
+        } catch NFCError.cancelled {
+        } catch {
+            self.error = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        }
     }
 }

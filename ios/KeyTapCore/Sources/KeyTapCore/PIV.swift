@@ -10,6 +10,9 @@ public protocol PIVTransport: Sendable {
 public enum PIVError: Error, Equatable, LocalizedError {
     case wrongPIN(retriesLeft: Int)
     case pinBlocked
+    case wrongPUK(retriesLeft: Int)
+    case pukBlocked
+    case badNewPIN
     case slotEmpty
     case securityStatusNotSatisfied
     case keyMismatch
@@ -18,8 +21,12 @@ public enum PIVError: Error, Equatable, LocalizedError {
 
     public var errorDescription: String? {
         switch self {
+        case .wrongPIN(let n) where n == 1: "Wrong PIN — 1 try left. One more wrong PIN blocks it; then only the PUK unblocks it."
         case .wrongPIN(let n): "Wrong PIN — \(n) \(n == 1 ? "try" : "tries") left before the PIN locks."
-        case .pinBlocked: "The PIN is blocked. Unblock it with the PUK on a computer (ykman piv access unblock-pin)."
+        case .pinBlocked: "The PIN is blocked. Unblock it with the PUK (here in KeyTap, or ykman piv access unblock-pin)."
+        case .wrongPUK(let n): "Wrong PUK — \(n) \(n == 1 ? "try" : "tries") left before the PUK locks."
+        case .pukBlocked: "The PUK is blocked too. The PIV application can then only be reset on a computer, which deletes its keys."
+        case .badNewPIN: "The new PIN must be 6 to 8 characters."
         case .slotEmpty: "This YubiKey has no key in the expected slot."
         case .securityStatusNotSatisfied: "The YubiKey refused the operation (PIN or touch not satisfied)."
         case .keyMismatch: "This is not the YubiKey the request was encrypted to."
@@ -79,6 +86,40 @@ public struct PIV: Sendable {
             throw n == 0 ? PIVError.pinBlocked : PIVError.wrongPIN(retriesLeft: n)
         default: throw PIVError.unexpected(sw: sw)
         }
+    }
+
+    static func pad8(_ s: String) -> [UInt8]? {
+        let p = Array(s.utf8)
+        guard (6...8).contains(p.count) else { return nil }
+        return p + Array(repeating: 0xFF, count: 8 - p.count)
+    }
+
+    public static func unblockAPDU(puk: String, newPIN: String) -> Data? {
+        guard let k = pad8(puk), let n = pad8(newPIN) else { return nil }
+        return Data([0x00, 0x2C, 0x00, 0x80, 0x10]) + k + n
+    }
+
+    /// RESET RETRY COUNTER: unblocks the PIN with the PUK and sets a new PIN.
+    public func unblockPIN(puk: String, newPIN: String) async throws {
+        guard Self.pad8(newPIN) != nil else { throw PIVError.badNewPIN }
+        guard var apdu = Self.unblockAPDU(puk: puk, newPIN: newPIN) else { throw PIVError.wrongPUK(retriesLeft: -1) }
+        defer { apdu.resetBytes(in: 0..<apdu.count) }
+        let (_, sw) = try await send(apdu)
+        switch sw {
+        case 0x9000: return
+        case 0x6983: throw PIVError.pukBlocked
+        case let s where s & 0xFFF0 == 0x63C0:
+            let n = Int(s & 0x0F)
+            throw n == 0 ? PIVError.pukBlocked : PIVError.wrongPUK(retriesLeft: n)
+        default: throw PIVError.unexpected(sw: sw)
+        }
+    }
+
+    /// PUK tries left, from GET METADATA on the PUK (firmware 5.3+); nil when unknown. Spends nothing.
+    public func pukRetries() async throws -> Int? {
+        let (m, sw) = try await send(Data([0x00, 0xF7, 0x00, 0x81, 0x00]))
+        guard sw == 0x9000, let r = TLV.find(0x06, in: m), r.count == 2 else { return nil }
+        return Int(r[r.startIndex + 1])
     }
 
     /// Yubico GET SERIAL (firmware 5+). nil when the key does not support it.

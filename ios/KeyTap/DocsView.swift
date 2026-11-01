@@ -15,26 +15,30 @@ struct DocsView: View {
             DocSection(title: "How it works", systemImage: "arrow.left.arrow.right") {
                 "1. You decrypt on the computer as usual. The KeyTap bridge — an age plugin on the computer — receives the encrypted file key, which only your YubiKey can unwrap."
                 "2. KeyTap shows the request in plain words: which command, which file, which computer, a short code that the computer's terminal shows too, and a note if whoever started it wrote one."
-                "3. You enter the YubiKey PIN and hold the key to the phone. The YubiKey performs the key agreement (PIV, P-256)."
+                "3. You pick the YubiKey you hold (the computer preselects the one you used last), enter its PIN and hold it to the phone. The phone reads the key's serial number first: a different key gets no PIN at all. The YubiKey performs the key agreement (PIV, P-256)."
                 "4. The phone unwraps the 16-byte file key and sends only that back. The computer finishes decrypting."
             }
             DocSection(title: "SSH sign-ins", systemImage: "terminal") {
                 "SSH keys that live on the YubiKey (ed25519-sk or ecdsa-sk, made with ssh-keygen and the key plugged in) work too. The bridge brings a small OpenSSH security key provider; ssh hands it the sign-in, and it appears here like a decryption."
                 "You see the account you sign in as, the key, the server's key and the ssh command. Enter the YubiKey's FIDO2 PIN and hold the key to the phone: the YubiKey signs this one login with its FIDO2 key, the phone sends only the signature back."
             }
+            DocSection(title: "Several YubiKeys", systemImage: "key.horizontal") {
+                "Any of your YubiKeys answers — the everyday one, a spare, the one in the safe. The computer keeps the list and sends it with each request; this iPhone registers none, so adding or dropping a key is a change on the computer only."
+                "One PIN, one tap. sops asks once per key a file is encrypted to and ssh tries one key after the other: KeyTap holds the tapped key for the whole command, skips the requests for the others and answers the right one in the same tap."
+            }
             DocSection(title: "Several computers", systemImage: "desktopcomputer") {
-                "Pair this iPhone with each computer you use — a laptop, a desktop at home, a workstation at the office. KeyTap asks all of them and shows each request with the computer's name."
+                "Pair this iPhone with each computer you use — a laptop, a desktop at home, a workstation at the office. KeyTap asks all of them and shows each request with the computer's name. If another computer answers first, the request here closes by itself."
             }
             DocSection(title: "Why it is secure", systemImage: "lock.shield") {
-                "Key, PIN and presence are still required. The private key never leaves the YubiKey; the PIN goes only to the YubiKey and is never stored; the tap is the presence."
+                "Key, PIN and presence are still required. The private key never leaves the YubiKey; the PIN goes only to the YubiKey it was entered for — checked by serial number before anything is sent — and is never stored; the tap is the presence."
                 "No server. KeyTap talks to one peer only: your own computer, directly over your network or your own VPN. There is no KeyTap service, no account, no cloud."
-                "Notifications are optional and off by default. If you switch them on, your computer asks the KeyTap relay to wake this iPhone through Apple's push service; a notification says only that a request is waiting and when it expires — no computer, command, file or code — and the relay stores nothing. Without them, keep KeyTap open while you decrypt."
+                "Notifications are optional and off by default. If you switch them on, your computer asks the KeyTap relay to wake this iPhone through Apple's push service; a notification says only what kind of request is waiting (a decryption, an SSH sign-in, a dry run) and when it expires — no computer, command, file or code — and the relay stores nothing. Without them, keep KeyTap open while you decrypt."
                 "Pinned and paired. The phone trusts only the certificate it paired with; the computer trusts only this phone's key, created in the Secure Enclave, which signs every answer — bound to the exact request you saw and to a one-time nonce, so it cannot be replayed."
                 "The computer only listens while a request waits for you, only on the address you chose, and each request expires after five minutes."
                 "Compare the code. Someone who controls the computer could start a request of their own; that is why you see the command and the code before you approve."
             }
             DocSection(title: "What stays on this iPhone", systemImage: "iphone") {
-                "For each paired computer its name, address, certificate fingerprint and pairing token, and the handle of the Secure Enclave key — in the keychain, this device only: never in iCloud, never in a backup."
+                "For each paired computer its name, address, certificate fingerprint and pairing token, and the handle of the Secure Enclave key — in the keychain, this device only: never in iCloud, never in a backup. Nothing about your YubiKeys: their list comes with each request and is gone when it is answered."
                 "Nothing is collected, nothing is sent anywhere else. No analytics, no crash reports, no third-party code."
             }
             DocSection(title: "What you need", systemImage: "checklist") {

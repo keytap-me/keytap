@@ -37,11 +37,6 @@ struct CheckKeyView: View {
                     LabeledContent("Touch policy", value: Self.touch(info.touchPolicy))
                     if let r = recipient(info) {
                         LabeledContent("Recipient") { Text(r).font(.caption2.monospaced()).lineLimit(1).truncationMode(.middle) }
-                        if let want = model.pairing?.recipient {
-                            Label(r == want ? "Matches the paired recipient" : "Does NOT match the paired recipient",
-                                  systemImage: r == want ? "checkmark.seal.fill" : "xmark.octagon.fill")
-                                .foregroundStyle(r == want ? .green : .red)
-                        }
                     }
                 }
             }

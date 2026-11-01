@@ -37,8 +37,10 @@ public struct SoftwareAgeKey: AgeKey {
     public var rawRepresentation: Data { key.rawRepresentation }
     public var recipientPoint: Data { key.publicKey.compressedRepresentation }
     public var recipient: String { PivP256.recipientString(recipientPoint) }
-    public var identity: String {
-        PivP256.identityString(serial: Self.fakeSerial, slot: Self.slot, tag: PivP256.tag(recipient: recipientPoint))
+    public var identity: String { identity(serial: Self.fakeSerial) }
+    /// The identity stub under a chosen serial (the soft phone stands in for several YubiKeys).
+    public func identity(serial: UInt32) -> String {
+        PivP256.identityString(serial: serial, slot: Self.slot, tag: PivP256.tag(recipient: recipientPoint))
     }
 
     public func recipient(for identity: ApprovalRequest.Identity) async throws -> Data? {
@@ -55,18 +57,16 @@ public struct SoftwareAgeKey: AgeKey {
 /// The identity file usually lists several YubiKeys (the plugin skips absent ones), so a request
 /// carries one stub and one stanza per key. Only the stubs of the TAPPED key are answered: the
 /// serial must match, then the slot's public key must hash to the stub's tag. Everything else
-/// is skipped, never an error.
+/// is skipped, never an error. The slot's public key comes from GET METADATA (firmware 5.3+), else
+/// from the certificate age-plugin-yubikey stores beside it.
 public actor YubiKeyAgeKey: AgeKey {
     let piv: PIV
-    /// The recipient the operator configured, used when the key's firmware has no GET METADATA.
-    let configuredRecipient: Data?
     private var serialRead = false
     private var cachedSerial: UInt32?
     private var slotKeys: [UInt8: Data?] = [:]
 
-    public init(piv: PIV, configuredRecipient: Data?) {
+    public init(piv: PIV) {
         self.piv = piv
-        self.configuredRecipient = configuredRecipient
     }
 
     /// The tapped key's serial (nil on firmware without GET SERIAL).
@@ -85,15 +85,15 @@ public actor YubiKeyAgeKey: AgeKey {
         if let cached = slotKeys[identity.slot] {
             point = cached
         } else {
-            do { point = try await piv.publicKey(slot: identity.slot) } catch PIVError.slotEmpty { point = nil }
+            var p: Data?
+            do { p = try await piv.publicKey(slot: identity.slot) } catch PIVError.slotEmpty { p = nil }
+            if p == nil { p = try? await piv.certificatePublicKey(slot: identity.slot) }
+            point = p
             slotKeys[identity.slot] = point
         }
-        if let point {
-            let compressed = try PivP256.compress(x963: point)
-            return PivP256.tag(recipient: compressed) == wanted ? compressed : nil
-        }
-        if let r = configuredRecipient, PivP256.tag(recipient: r) == wanted { return r }
-        return nil
+        guard let point else { return nil }
+        let compressed = try PivP256.compress(x963: point)
+        return PivP256.tag(recipient: compressed) == wanted ? compressed : nil
     }
 
     public func sharedSecret(for identity: ApprovalRequest.Identity, peer x963: Data) async throws -> Data {
@@ -162,6 +162,15 @@ public enum Approver {
         let msg = ApprovalAnswer.signedMessage(requestBytes: requestBytes, nonce: request.nonce, declined: false,
                                                results: [], ssh: ssh)
         return ApprovalAnswer(id: request.id, declined: false, results: [], ssh: ssh, signature: try signer.sign(msg).base64Raw)
+    }
+
+    /// "Held": the tapped key (serial) is not the one this request needs; the phone keeps it for the next.
+    public static func held(_ request: ApprovalRequest, requestBytes: Data, serial: UInt32,
+                            signer: DeviceSigner) throws -> ApprovalAnswer {
+        let h = HeldKey(serial: serial)
+        let msg = ApprovalAnswer.signedMessage(requestBytes: requestBytes, nonce: request.nonce, declined: false,
+                                               results: [], held: h)
+        return ApprovalAnswer(id: request.id, declined: false, held: h, results: [], signature: try signer.sign(msg).base64Raw)
     }
 
     public static func decline(_ request: ApprovalRequest, requestBytes: Data, signer: DeviceSigner) throws -> ApprovalAnswer {

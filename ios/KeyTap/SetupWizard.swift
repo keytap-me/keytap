@@ -1,8 +1,9 @@
 import KeyTapCore
 import SwiftUI
 
-/// First run, and "Set up again": explains KeyTap, walks through preparing the computer, pairs,
-/// registers the YubiKey, then proves PIN + tap on the phone and the whole chain with a dry run.
+/// First run, and "Set up again": explains KeyTap, walks through preparing the computer, pairs, then proves
+/// PIN + tap on the phone and the whole chain with a dry run. The phone registers no YubiKey: the computer
+/// sends its key list with every request.
 struct SetupWizard: View {
     @Environment(AppModel.self) private var model
     @Binding var incomingLink: PairingLink?
@@ -186,8 +187,6 @@ private struct PairStep: View {
     let next: () -> Void
     @State private var pasted = ""
     @State private var link: PairingLink?
-    @State private var slot: UInt8 = 0x82
-    @State private var yubikeys: [BridgeClient.RegisteredKey] = []
     @State private var busy = false
     @State private var error: String?
     @State private var networkDenied = false
@@ -214,32 +213,9 @@ private struct PairStep: View {
                     LabeledContent("Certificate", value: link.pin.prefix(6).map { String(format: "%02x", $0) }.joined())
                 }
                 Section {
-                    ForEach(yubikeys, id: \.serial) { k in
-                        LabeledContent {
-                            Text(PivP256.recipientString(Data(base64Raw: k.recipient) ?? Data()))
-                                .font(.caption2.monospaced()).lineLimit(1).truncationMode(.middle)
-                        } label: {
-                            Label("YubiKey \(k.serial)", systemImage: "checkmark.circle.fill")
-                        }
-                    }
-                    .onDelete { yubikeys.remove(atOffsets: $0) }
-                    Button(yubikeys.isEmpty ? "Tap YubiKey to Register It" : "Add Another YubiKey",
-                           systemImage: yubikeys.isEmpty ? "key.radiowaves.forward" : "plus.circle") {
-                        Task { await readKey() }
-                    }
-                    .disabled(busy)
-                    .accessibilityIdentifier("register-yubikey")
-                    DisclosureGroup("Advanced") {
-                        Picker("PIV slot", selection: $slot) {
-                            ForEach(0..<20, id: \.self) { i in
-                                Text("Retired \(i + 1)\(i == 0 ? " (default)" : "")").tag(UInt8(0x82 + i))
-                            }
-                        }
-                    }
-                } header: {
-                    Text("Your YubiKey")
+                    Label("No YubiKey to register", systemImage: "key.horizontal")
                 } footer: {
-                    Text("Tap each YubiKey you want to use with this phone — one is enough. Reads the serial number and the age key's public half; no PIN, nothing is changed. The computer asks this phone only about registered keys and skips the others.")
+                    Text("This iPhone stores nothing about your YubiKeys. The computer keeps the list (add or drop a key there at any time) and sends it with each request; you pick the key you hold, or just tap it.")
                 }
                 NotificationSection(showStatus: false)
                 Section {
@@ -252,7 +228,7 @@ private struct PairStep: View {
                             if busy { ProgressView() }
                         }
                     }
-                    .disabled(busy || yubikeys.isEmpty)
+                    .disabled(busy)
                     .accessibilityIdentifier("pair")
                 } footer: {
                     Text(DeviceKey.isHardwareBacked
@@ -281,27 +257,7 @@ private struct PairStep: View {
         incomingLink = nil
     }
 
-    private func readKey() async {
-        busy = true
-        error = nil
-        defer { busy = false }
-        do {
-            let k = try await model.readYubiKey(slot: slot)
-            if let i = yubikeys.firstIndex(where: { $0.serial == k.serial }) {
-                yubikeys[i] = k // read again: keep the latest
-            } else {
-                yubikeys.append(k)
-            }
-        } catch NFCError.cancelled {
-        } catch PIVError.slotEmpty {
-            error = "This YubiKey has no age key in that slot. Create one with age-plugin-yubikey on the computer, or pick the slot it uses under Advanced."
-        } catch {
-            self.error = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-        }
-    }
-
     private func pair(_ link: PairingLink) async {
-        guard !yubikeys.isEmpty else { return }
         busy = true
         error = nil
         defer { busy = false }
@@ -318,7 +274,7 @@ private struct PairStep: View {
             return
         }
         do {
-            try await model.pair(with: link, keys: yubikeys)
+            try await model.pair(with: link)
             next()
         } catch {
             self.error = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription

@@ -254,27 +254,9 @@ func verifyAssertion(k *skPublicKey, application string, data []byte, a *SSHAnsw
 	return nil
 }
 
-func runSKSign(stdin io.Reader, stdout io.Writer) error {
-	fail := func(code int, err error) error {
-		logf("sk-sign: %v", err)
-		fmt.Fprintf(stdout, "error %d %s\n", code, strings.ReplaceAll(err.Error(), "\n", " "))
-		return nil
-	}
-	q, err := parseSKRequest(stdin)
-	if err != nil {
-		return fail(skErrGeneral, err)
-	}
-	cfg, err := loadConfig()
-	if err == nil && len(cfg.Devices) == 0 {
-		err = errors.New("no phone is paired with this bridge; run `age-plugin-yubikey-phone pair`")
-	}
-	if err == nil && strings.HasPrefix(cfg.Listen, ":") {
-		err = errors.New("no listen address stored; run `age-plugin-yubikey-phone pair --host IP` again")
-	}
-	if err != nil {
-		return fail(skErrGeneral, err)
-	}
-
+// buildSSHSign turns a provider request into what the phone shows and signs, plus the check the answer must
+// pass: the flags the key demands, and the signature against the offered public key (as sshd will check it).
+func buildSSHSign(q *skRequest, keys []keyEntry) (*SSHSign, *skPublicKey, func(*Answer) error) {
 	purpose, login, key, hostKey := describeSSHData(q.data)
 	if key != nil && key.application != q.application {
 		key = nil // not the key being used (cannot happen with a well-formed request); verify nothing against it
@@ -293,14 +275,12 @@ func runSKSign(stdin io.Reader, stdout io.Writer) error {
 	if key != nil {
 		sign.KeyFingerprint = fingerprint(key.blob)
 		sign.KeyName = keyName(key.blob)
+		sign.KeySerial = sshKeySerial(keys, key.blob)
 	}
 	if len(hostKey) > 0 {
 		sign.HostKey = fingerprint(hostKey)
 	}
-	req := &Request{Version: protoVersion, Kind: "ssh", SSH: sign, Identities: []Identity{}, Files: []File{}}
-	req.Command, req.Cwd = sshRequester()
-
-	answer, err := askPhone(sayTTY, cfg, req, func(a *Answer) error {
+	check := func(a *Answer) error {
 		if a.SSH == nil {
 			return errors.New("the answer carries no signature")
 		}
@@ -318,22 +298,27 @@ func runSKSign(stdin io.Reader, stdout io.Writer) error {
 			return verifyAssertion(key, q.application, q.data, a.SSH, sig)
 		}
 		return nil
-	})
-	if err != nil {
-		return fail(skErrGeneral, err)
 	}
-	sig, _ := b64any(answer.SSH.Signature)
+	return sign, key, check
+}
+
+// providerAnswer formats the YubiKey's assertion as the provider protocol's "ok" line.
+func providerAnswer(alg int, a *SSHAnswer) (string, error) {
+	sig, err := b64any(a.Signature)
+	if err != nil {
+		return "", err
+	}
 	var r, s []byte
-	switch q.alg {
+	switch alg {
 	case skAlgEd25519:
 		if len(sig) != ed25519.SignatureSize {
-			return fail(skErrGeneral, fmt.Errorf("Ed25519 signature of %d bytes", len(sig)))
+			return "", fmt.Errorf("Ed25519 signature of %d bytes", len(sig))
 		}
 		r = sig
 	case skAlgECDSA:
 		var es struct{ R, S *big.Int }
 		if rest, err := asn1.Unmarshal(sig, &es); err != nil || len(rest) > 0 || es.R == nil || es.S == nil {
-			return fail(skErrGeneral, errors.New("malformed ECDSA signature"))
+			return "", errors.New("malformed ECDSA signature")
 		}
 		r, s = es.R.Bytes(), es.S.Bytes()
 	}
@@ -341,9 +326,53 @@ func runSKSign(stdin io.Reader, stdout io.Writer) error {
 	if s != nil {
 		sHex = hex.EncodeToString(s)
 	}
-	logf("request %s: ssh %s signed (%s %s)", req.Code, purpose, sign.Login, sign.KeyFingerprint)
-	_, err = fmt.Fprintf(stdout, "ok %d %d %s %s\n", answer.SSH.Flags, answer.SSH.Counter, hex.EncodeToString(r), sHex)
-	return err
+	return fmt.Sprintf("ok %d %d %s %s\n", a.Flags, a.Counter, hex.EncodeToString(r), sHex), nil
+}
+
+// runSKSign answers keytap-sk.dylib. ssh starts a fresh ssh-sk-helper (and so a fresh sk-sign) for every
+// identity it tries, so the chain lives in a holder keyed on the ssh process: wrong-key attempts fail fast,
+// the right one signs in the same tap.
+func runSKSign(stdin io.Reader, stdout io.Writer, session string, explicit bool) (int, error) {
+	fail := func(code int, out outcome, err error) (int, error) {
+		logf("sk-sign: %v", err)
+		fmt.Fprintf(stdout, "error %d %s\n", code, strings.ReplaceAll(err.Error(), "\n", " "))
+		if explicit {
+			return out.exitCode(), nil
+		}
+		return 0, nil
+	}
+	q, err := parseSKRequest(stdin)
+	if err != nil {
+		return fail(skErrGeneral, outError, err)
+	}
+	cfg, err := loadConfig()
+	if err == nil && len(cfg.Devices) == 0 {
+		err = errors.New("no phone is paired with this bridge; run `age-plugin-yubikey-phone pair`")
+	}
+	if err != nil {
+		return fail(skErrGeneral, outError, err)
+	}
+	command, cwd := sshRequester()
+	resp, err := holderCall(session, &holderReq{Op: "sign", SK: wireSK(q), Cmd: command, Cwd: cwd,
+		Note: cleanNote(os.Getenv("KEYTAP_NOTE"))}, sayTTY)
+	if err != nil {
+		return fail(skErrGeneral, outError, err)
+	}
+	out := outcomeOf(resp.Status)
+	if out != outAnswered || resp.SSH == nil {
+		msg := resp.Message
+		if msg == "" {
+			msg = map[outcome]string{outNotHere: "the tapped YubiKey does not hold this key", outWithdrawn: "withdrawn",
+				outTimedOut: "no answer from the phone", outDeclined: "declined on the phone"}[out]
+		}
+		return fail(skErrGeneral, out, errors.New(msg))
+	}
+	line, err := providerAnswer(q.alg, resp.SSH)
+	if err != nil {
+		return fail(skErrGeneral, outError, err)
+	}
+	_, err = io.WriteString(stdout, line)
+	return 0, err
 }
 
 // sayTTY talks to the person at the terminal: ssh runs the provider in ssh-sk-helper, whose stdout is our

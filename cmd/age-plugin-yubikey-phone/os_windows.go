@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"errors"
+	"net"
 	"os"
 	"os/exec"
 	"strconv"
@@ -53,3 +54,24 @@ func requester() (command, cwd string) {
 var isDarwin = false
 
 func sshRequester() (command, cwd string) { return requester() }
+
+func processAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	p, err := os.FindProcess(pid) // opens a handle: fails when there is no such process
+	if err != nil {
+		return false
+	}
+	p.Release()
+	return true
+}
+
+// detach starts the holder without a console of its own, outliving the plugin invocation.
+func detach(cmd *exec.Cmd) {
+	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: 0x00000008 | 0x00000200} // DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+}
+
+func sshPID() int { return os.Getppid() }
+
+func agentPeer(net.Conn) (command, cwd string) { return "ssh (through the KeyTap agent)", "" }

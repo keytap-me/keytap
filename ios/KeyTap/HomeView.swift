@@ -35,6 +35,16 @@ struct HomeView: View {
                     .background(.fill.tertiary, in: .rect(cornerRadius: 12))
                     .padding(.horizontal, 24)
                 }
+                if let n = model.notice, !model.isDemo {
+                    Label(n, systemImage: "info.circle")
+                        .font(.footnote)
+                        .padding(12)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(.fill.tertiary, in: .rect(cornerRadius: 12))
+                        .padding(.horizontal, 24)
+                        .onTapGesture { model.notice = nil }
+                        .task(id: n) { try? await Task.sleep(for: .seconds(20)); if model.notice == n { model.notice = nil } }
+                }
                 Spacer()
                 if model.isDemo {
                     VStack(spacing: 10) {

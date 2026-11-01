@@ -59,6 +59,7 @@ type SSHSign struct {
 	Algorithm        string `json:"algorithm"`        // "ed25519" | "es256"
 	UserPresence     bool   `json:"user_presence"`
 	UserVerification bool   `json:"user_verification"`              // the key was made with verify-required
+	KeySerial        uint32 `json:"key_serial,omitempty"`           // the YubiKey holding this credential, if the computer knows it (keys.conf)
 	Purpose          string `json:"purpose"`                        // "login" (ssh user authentication) | "signature" (anything else)
 	Login            string `json:"login,omitempty"`                // the remote user name of a login
 	KeyFingerprint   string `json:"key_fingerprint,omitempty"`      // SHA256:… of the public key ssh offers
@@ -66,9 +67,19 @@ type SSHSign struct {
 	HostKey          string `json:"host_key_fingerprint,omitempty"` // SHA256:… of the server's host key (host-bound login)
 }
 
+// KeyInfo is one YubiKey the computer knows (its keys.conf / identity file): what the phone offers in its
+// key picker. Public facts only; the phone stores none of it.
+type KeyInfo struct {
+	Serial uint32 `json:"serial"`
+	Label  string `json:"label"`
+}
+
 type Request struct {
 	Version    int        `json:"version"`
-	Kind       string     `json:"kind,omitempty"` // "" = decrypt, "test" = dry run, "ssh" = OpenSSH FIDO2 signature
+	Keys       []KeyInfo  `json:"keys,omitempty"`      // the computer's YubiKeys, for the phone's picker
+	Default    uint32     `json:"default,omitempty"`   // the key to preselect (the last one used here)
+	Continues  string     `json:"continues,omitempty"` // the id of the request this one follows in the same tap (a chain)
+	Kind       string     `json:"kind,omitempty"`      // "" = decrypt, "test" = dry run, "ssh" = OpenSSH FIDO2 signature
 	Probe      *Probe     `json:"probe,omitempty"`
 	SSH        *SSHSign   `json:"ssh,omitempty"`
 	ID         string     `json:"id"`
@@ -98,9 +109,16 @@ type SSHAnswer struct {
 	Counter   uint32 `json:"counter"`   // signature counter
 }
 
+// Held: the phone has the tapped YubiKey (this serial) in an open session, but this request is not for
+// it. The phone keeps the session open and waits for the next request of the chain (Continues).
+type Held struct {
+	Serial uint32 `json:"serial"`
+}
+
 type Answer struct {
 	ID        string     `json:"id"`
 	Declined  bool       `json:"declined"`
+	Held      *Held      `json:"held,omitempty"`
 	Results   []Result   `json:"results"`
 	SSH       *SSHAnswer `json:"ssh,omitempty"`
 	Proof     string     `json:"proof,omitempty"` // dry run: base64 HMAC-SHA256(wrap key, "keytap-probe-v1" ‖ nonce)
@@ -119,6 +137,10 @@ func signedMessage(requestBytes []byte, nonce string, a *Answer) []byte {
 	b.WriteString("\n")
 	if a.Declined {
 		b.WriteString("declined\n")
+		return []byte(b.String())
+	}
+	if a.Held != nil {
+		fmt.Fprintf(&b, "held %d\n", a.Held.Serial)
 		return []byte(b.String())
 	}
 	if a.Proof != "" {

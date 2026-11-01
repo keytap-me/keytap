@@ -13,6 +13,17 @@ final class NFCPIVSession: NSObject, NFCTagReaderSessionDelegate, @unchecked Sen
 
     static var isAvailable: Bool { NFCTagReaderSession.readingAvailable }
 
+    /// The session on screen, so a withdrawn request can close it ("answered elsewhere").
+    nonisolated(unsafe) private static weak var active: NFCPIVSession?
+    private var withdrawnMessage: String?
+
+    /// Closes the NFC sheet of the session in progress with a message; its run throws NFCError.withdrawn.
+    static func cancelActive(message: String) {
+        guard let s = active else { return }
+        s.withdrawnMessage = message
+        s.session?.invalidate(errorMessage: message)
+    }
+
     static func run<T: Sendable>(prompt: String, done: String,
                                  _ body: @escaping @Sendable (PIVTransport) async throws -> T) async throws -> T {
         let s = NFCPIVSession()
@@ -29,6 +40,7 @@ final class NFCPIVSession: NSObject, NFCTagReaderSessionDelegate, @unchecked Sen
             }
             session.alertMessage = prompt
             s.session = session
+            active = s
             session.begin()
         }
     }
@@ -49,8 +61,22 @@ final class NFCPIVSession: NSObject, NFCTagReaderSessionDelegate, @unchecked Sen
     func tagReaderSessionDidBecomeActive(_ session: NFCTagReaderSession) {}
 
     func tagReaderSession(_ session: NFCTagReaderSession, didInvalidateWithError error: Error) {
-        let code = (error as? NFCReaderError)?.code
-        end(code == .readerSessionInvalidationErrorUserCanceled ? NFCError.cancelled : error)
+        if let m = withdrawnMessage { end(NFCError.withdrawn(m)); return }
+        end(Self.map(error))
+    }
+
+    /// A lost or moved key, a timeout: say so in words that lead to the retry (the request stays open).
+    static func map(_ error: Error) -> Error {
+        guard let code = (error as? NFCReaderError)?.code else { return error }
+        switch code {
+        case .readerSessionInvalidationErrorUserCanceled: return NFCError.cancelled
+        case .readerTransceiveErrorTagConnectionLost, .readerTransceiveErrorTagResponseError, .readerTransceiveErrorRetryExceeded,
+             .readerTransceiveErrorTagNotConnected, .readerTransceiveErrorPacketTooLong:
+            return NFCError.tagLost
+        case .readerSessionInvalidationErrorSessionTimeout, .readerSessionInvalidationErrorSessionTerminatedUnexpectedly:
+            return NFCError.timedOut
+        default: return error
+        }
     }
 
     func tagReaderSession(_ session: NFCTagReaderSession, didDetect tags: [NFCTag]) {
@@ -63,7 +89,7 @@ final class NFCPIVSession: NSObject, NFCTagReaderSessionDelegate, @unchecked Sen
         session.connect(to: tags.first!) { [self] error in
             if let error {
                 box.session.invalidate(errorMessage: "Lost the YubiKey — try again.")
-                end(error)
+                end(Self.map(error))
                 return
             }
             Task { await converse(box) }
@@ -77,8 +103,19 @@ final class NFCPIVSession: NSObject, NFCTagReaderSessionDelegate, @unchecked Sen
             box.session.invalidate()
             end(nil)
         } catch {
-            box.session.invalidate(errorMessage: (error as? LocalizedError)?.errorDescription ?? "\(error)")
-            end(error)
+            let e = withdrawnMessage.map { NFCError.withdrawn($0) } ?? Self.map(error)
+            box.session.invalidate(errorMessage: Self.sheetMessage(e))
+            end(e)
+        }
+    }
+
+    /// The NFC sheet's line: short (it is a small banner); the full text shows in the app afterwards.
+    private static func sheetMessage(_ e: Error) -> String {
+        switch e {
+        case PIVError.wrongPIN, CTAPError.wrongPIN, CTAPError.pinInvalid: "Wrong PIN."
+        case TapError.otherKeyTapped: "Another YubiKey — no PIN sent."
+        case NFCError.tagLost: "Lost the YubiKey — try again."
+        default: (e as? LocalizedError)?.errorDescription ?? "\(e)"
         }
     }
 }
@@ -99,13 +136,17 @@ struct NFCTransport: PIVTransport, @unchecked Sendable {
 }
 
 enum NFCError: Error, LocalizedError {
-    case unavailable, cancelled, badAPDU
+    case unavailable, cancelled, badAPDU, tagLost, timedOut
+    case withdrawn(String)
 
     var errorDescription: String? {
         switch self {
         case .unavailable: "This iPhone cannot read NFC tags."
         case .cancelled: "Cancelled."
         case .badAPDU: "Internal error building a YubiKey command."
+        case .tagLost: "Lost the YubiKey. Hold it still at the top of the iPhone and tap Approve again."
+        case .timedOut: "The YubiKey was not held to the iPhone in time. Tap Approve to try again."
+        case .withdrawn(let m): m
         }
     }
 }

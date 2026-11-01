@@ -11,6 +11,8 @@ struct SelfTestForm: View {
     @State private var busy = false
     @State private var result: PIV.Info?
     @State private var error: String?
+    @State private var blocked = false
+    @State private var showPUK = false
 
     var body: some View {
         Form {
@@ -25,7 +27,7 @@ struct SelfTestForm: View {
                         .textContentType(.oneTimeCode)
                         .accessibilityIdentifier("selftest-pin")
                 } footer: {
-                    Text("The PIN goes only to the YubiKey and is not stored. Three wrong PINs lock it.")
+                    Text("The PIN of the YubiKey you will hold to the iPhone. It goes only to that key and is not stored. Three wrong PINs lock it; the PUK unblocks it.")
                 }
             }
             Section {
@@ -54,8 +56,21 @@ struct SelfTestForm: View {
                 }
             }
             if let error {
-                Section { Text(error).foregroundStyle(.red) }
+                Section {
+                    Text(error).foregroundStyle(.red)
+                    if blocked {
+                        Button("Unblock the PIN with the PUK", systemImage: "lock.open") { showPUK = true }
+                    }
+                }
             }
+        }
+        .sheet(isPresented: $showPUK) {
+            PUKSheet(serial: nil, label: { "YubiKey \($0)" }) {
+                showPUK = false
+                blocked = false
+                error = "PIN changed. Run the test with the new PIN."
+            }
+            .environment(model)
         }
     }
 
@@ -67,11 +82,14 @@ struct SelfTestForm: View {
         pin = ""
         defer { busy = false }
         do {
-            let slot = model.pairing?.keys?.first?.slot ?? CheckKeyView.slot
+            let slot = CheckKeyView.slot
             let r = try await model.selfTest(pin: p, slot: slot)
             result = r
             onPassed?(r)
         } catch NFCError.cancelled {
+        } catch PIVError.pinBlocked {
+            blocked = true
+            error = PIVError.pinBlocked.errorDescription
         } catch {
             self.error = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
