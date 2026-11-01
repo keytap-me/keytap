@@ -1,3 +1,9 @@
 /dist/
 /build/
 .DS_Store
+ios/build/
+DerivedData/
+xcuserdata/
+*.xcuserstate
+.build/
+.swiftpm/

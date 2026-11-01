@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>me.keytap.app.pair</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>keytap</string>
+			</array>
+		</dict>
+	</array>
+	<key>com.apple.developer.nfc.readersession.iso7816.select-identifiers</key>
+	<array>
+		<string>A000000308</string>
+	</array>
+	<key>NFCReaderUsageDescription</key>
+	<string>KeyTap reads your YubiKey to approve a decryption on your workstation.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>KeyTap connects to your workstation to fetch decryption requests.</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>remote-notification</string>
+	</array>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
+</dict>
+</plist>

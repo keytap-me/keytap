@@ -21,3 +21,33 @@ jobs:
             GOOS=${t%/*} GOARCH=${t#*/} CGO_ENABLED=0 go build -o /dev/null ./cmd/age-plugin-yubikey-phone
           done
       - run: sh -n install/install.sh
+
+  # The iOS app: tests of KeyTapCore, then a Release build for devices without signing (signing needs
+  # our Apple keys, which never come here). The built binary is then checked for the README's promise:
+  # the only addresses it knows are keytap.me, this repository and Apple's licence page, and it carries
+  # no third-party framework.
+  ios:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: xcodebuild -version
+      - name: KeyTapCore tests
+        run: cd ios/KeyTapCore && swift test
+      - name: build (Release, arm64, unsigned)
+        run: |
+          xcodebuild -quiet -project ios/KeyTap.xcodeproj -scheme KeyTap -configuration Release \
+            -destination 'generic/platform=iOS' -derivedDataPath build/dd CODE_SIGNING_ALLOWED=NO build
+      - name: no server, no third-party code
+        run: |
+          set -eu
+          app=build/dd/Build/Products/Release-iphoneos/KeyTap.app
+          for bin in "$app/KeyTap" "$app/PlugIns/KeyTapNotify.appex/KeyTapNotify"; do
+            echo "== $bin"
+            strings -a "$bin" | grep -o -i -E 'https?://[a-z0-9.-]+[^ "]*' | sort -u | tee urls.txt
+            if grep -v -i -E '^https://(keytap\.me|github\.com/keytap-me/keytap|www\.apple\.com/legal/internet-services/itunes/dev/stdeula/)' urls.txt | grep .; then
+              echo "::error::$bin references an address outside the allowed list"; exit 1
+            fi
+          done
+          if [ -d "$app/Frameworks" ] && [ -n "$(ls -A "$app/Frameworks")" ]; then
+            ls -la "$app/Frameworks"; echo "::error::the app embeds a framework"; exit 1
+          fi

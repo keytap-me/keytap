@@ -1,8 +1,9 @@
 # KeyTap bridge — `age-plugin-yubikey-phone`
 
 Approve an `age` / `sops` decryption on your computer with the YubiKey® in your pocket, by tapping
-it against your iPhone. This repository holds the computer side: a small age plugin, the **KeyTap
-bridge**. The iPhone side is the free KeyTap app. Website and full guide: **https://keytap.me**
+it against your iPhone. This repository holds both sides: the computer side, a small age plugin
+called the **KeyTap bridge** (`cmd/`), and the source of the free **KeyTap iPhone app** (`ios/`).
+Website and full guide: **https://keytap.me**
 
 ```
 sops / age ──stdio──> age-plugin-yubikey-phone ──HTTPS, only while a request waits──< KeyTap (iPhone) ──NFC──> YubiKey
@@ -98,6 +99,48 @@ the command and the key still decide. `test --note "…"` sets it for a dry run.
 State lives in `~/.secure/keytap/` (`KEYTAP_DIR` overrides): the bridge certificate, the paired
 devices and a log of request metadata — never a file key.
 
+## The iPhone app (`ios/`)
+
+The source of KeyTap as it is on the App Store: SwiftUI, Apple frameworks only (CryptoKit, CoreNFC,
+Security), no third-party code, no analytics, no crash reporting.
+
+| Path | What |
+|---|---|
+| `ios/KeyTap/` | the app |
+| `ios/KeyTapNotify/` | the notification service extension: decrypts the detail-free notification summary on the phone |
+| `ios/KeyTapCore/` | everything that is not UI — the piv-p256 unwrap, the PIV commands, the bridge client — as a Swift package with tests, plus `keytap-softphone`, a software phone for the Mac |
+| `ios/Config/` | Info.plist, entitlements, privacy manifest settings |
+
+Build it yourself (Xcode 16 or later):
+
+```sh
+cd ios/KeyTapCore && swift test                    # the protocol and crypto tests, no device needed
+xcodebuild -project ios/KeyTap.xcodeproj -scheme KeyTap -configuration Release \
+  -destination 'generic/platform=iOS' CODE_SIGNING_ALLOWED=NO build
+```
+
+To run it on your own iPhone, open `ios/KeyTap.xcodeproj`, choose your own team and bundle id, and
+let Xcode sign it (NFC needs a paid developer account).
+
+Every push is built here by [CI](.github/workflows/ci.yml), which also checks the built binary: the
+only addresses it contains are keytap.me, this repository and Apple's licence page, and it embeds no
+framework. The app shows its version and build in Settings ▸ About.
+
+### What you can and cannot verify
+
+You can read every line the app is built from, build it, and run your build instead of ours. What
+you cannot do on iOS — for any app — is compare the App Store download with a build of your own:
+Apple re-signs and encrypts each download for the device, so the bytes on your phone never match
+what we uploaded, and iOS does not let you read them. A hash shown by the app would prove nothing
+either, because a modified app could show any hash.
+
+So KeyTap keeps what the app can do small, and that part does not depend on trusting our build:
+the private key never leaves the YubiKey, so no app can copy it; every decrypt still needs the
+physical key, its PIN and a tap; and the phone only ever sees the 16-byte file key of the one
+request in front of it, never your files. The computer side, where your files are, is this
+repository's bridge, and that one you can verify: release binaries are built by GitHub Actions from
+the tag, listed in `SHA256SUMS`, and carry build provenance attestations (see Install).
+
 ## Support, security reports
 
 - Help: https://keytap.me/support · support@keytap.me
@@ -106,6 +149,8 @@ devices and a log of request metadata — never a file key.
 ## License
 
 Dual-licensed under [MIT](LICENSE-MIT) OR [Apache-2.0](LICENSE-APACHE), at your option.
+The licences cover the code. The KeyTap name and app icon are not licensed for other apps: if you
+publish your own build, give it your own name and icon.
 
 ---
 

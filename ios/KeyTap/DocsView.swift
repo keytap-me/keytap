@@ -1,0 +1,74 @@
+import SwiftUI
+
+/// What KeyTap is, why it exists and why it is safe — inside the app, so it needs no website.
+struct DocsView: View {
+    var body: some View {
+        List {
+            Section {
+                Text("KeyTap lets you approve a decryption on your computer with the YubiKey in your pocket — by tapping it against your iPhone.")
+            }
+            DocSection(title: "The gap it closes", systemImage: "puzzlepiece.extension") {
+                "Tools like age and sops can keep the decryption key on a YubiKey (age-plugin-yubikey): nothing on the computer can decrypt without the key, its PIN and a touch."
+                "That breaks the moment the YubiKey and the computer are apart — you are travelling with your phone and the key, and work on the computer remotely. The usual workarounds all put a usable key back on a machine: a copied key file, a server that approves for you, a push button."
+                "KeyTap turns the iPhone into a remote card reader for exactly one operation. The key agreement still happens on the YubiKey, which still asks for its PIN and a tap."
+            }
+            DocSection(title: "How it works", systemImage: "arrow.left.arrow.right") {
+                "1. You decrypt on the computer as usual. The KeyTap bridge — an age plugin on the computer — receives the encrypted file key, which only your YubiKey can unwrap."
+                "2. KeyTap shows the request in plain words: which command, which file, which computer, a short code that the computer's terminal shows too, and a note if whoever started it wrote one."
+                "3. You enter the YubiKey PIN and hold the key to the phone. The YubiKey performs the key agreement (PIV, P-256)."
+                "4. The phone unwraps the 16-byte file key and sends only that back. The computer finishes decrypting."
+            }
+            DocSection(title: "Why it is secure", systemImage: "lock.shield") {
+                "Key, PIN and presence are still required. The private key never leaves the YubiKey; the PIN goes only to the YubiKey and is never stored; the tap is the presence."
+                "No server. KeyTap talks to one peer only: your own computer, directly over your network or your own VPN. There is no KeyTap service, no account, no cloud."
+                "Notifications are optional and off by default. If you switch them on, your computer asks the KeyTap relay to wake this iPhone through Apple's push service; a notification says only that a request is waiting and when it expires — no computer, command, file or code — and the relay stores nothing. Without them, keep KeyTap open while you decrypt."
+                "Pinned and paired. The phone trusts only the certificate it paired with; the computer trusts only this phone's key, created in the Secure Enclave, which signs every answer — bound to the exact request you saw and to a one-time nonce, so it cannot be replayed."
+                "The computer only listens while a decrypt waits for you, only on the address you chose, and each request expires after five minutes."
+                "Compare the code. Someone who controls the computer could start a decrypt of their own; that is why you see the command and the code before you approve."
+            }
+            DocSection(title: "What stays on this iPhone", systemImage: "iphone") {
+                "The computer's address, its certificate fingerprint, the pairing token and the handle of the Secure Enclave key — in the keychain, this device only: never in iCloud, never in a backup."
+                "Nothing is collected, nothing is sent anywhere else. No analytics, no crash reports, no third-party code."
+            }
+            DocSection(title: "What you need", systemImage: "checklist") {
+                "A YubiKey 5 with NFC (or one you can plug into the iPhone) holding an age key made by age-plugin-yubikey."
+                "A computer running age or sops with the KeyTap bridge (age-plugin-yubikey-phone)."
+                "The phone and the computer on the same network, or the phone on a VPN into it."
+            }
+            Section {
+                Link("keytap.me — guide, security and privacy", destination: Links.website)
+                NavigationLink("Legal — privacy, terms, imprint, licenses") { LegalView() }
+                Text("KeyTap \(AppInfo.version)").foregroundStyle(.secondary)
+                Text("YubiKey is a registered trademark of Yubico AB. KeyTap is an independent project and is not affiliated with, sponsored or endorsed by Yubico. Apple and iPhone are trademarks of Apple Inc.")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+        }
+        .navigationTitle("About KeyTap")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+private struct DocSection: View {
+    let title: String
+    let systemImage: String
+    let paragraphs: [String]
+
+    init(title: String, systemImage: String, @ParagraphBuilder _ content: () -> [String]) {
+        self.title = title
+        self.systemImage = systemImage
+        self.paragraphs = content()
+    }
+
+    var body: some View {
+        Section {
+            ForEach(paragraphs, id: \.self) { Text($0).font(.callout) }
+        } header: {
+            Label(title, systemImage: systemImage)
+        }
+    }
+}
+
+@resultBuilder
+enum ParagraphBuilder {
+    static func buildBlock(_ parts: String...) -> [String] { parts }
+}

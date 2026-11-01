@@ -1,0 +1,14 @@
+# Secret scanning for this repository (gitleaks). The default rules apply; the only exceptions are
+# three phrases the generic rule mistakes for keys: CryptoKit type names, a protocol label and a
+# README sentence. Nothing that looks like key material is allowlisted.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "type names and labels, not secrets"
+regexTarget = "match"
+regexes = [
+  '''key: P256\.(Signing|KeyAgreement)\.PrivateKey''',
+  '''key, "keytap-probe-v1"''',
+  '''key = ChaCha20-Poly1305''',
+]
