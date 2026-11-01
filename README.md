@@ -124,7 +124,9 @@ let Xcode sign it (NFC needs a paid developer account).
 
 Every push is built here by [CI](.github/workflows/ci.yml), which also checks the built binary: the
 only addresses it contains are keytap.me, this repository and Apple's licence page, and it embeds no
-framework. The app shows its version and build in Settings ▸ About.
+framework. The app shows its version and build in Settings ▸ About, and every build we upload to
+the App Store has a tag here, `ios-v<version>-<build>` (e.g. `ios-v1.0.0-202610301517`), on the
+exact source it was built from.
 
 ### What you can and cannot verify
 
