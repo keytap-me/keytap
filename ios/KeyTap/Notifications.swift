@@ -33,17 +33,20 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         return .noData
     }
 
-    /// With KeyTap open the request sheet is already on screen: no banner on top of it (the app chimes
-    /// itself when the poll shows the request, see AppModel.poll).
+    /// With KeyTap open the request sheet is already on screen: no banner on top of it. The sound plays
+    /// here only if the open app has not sounded this request yet (one sound per request, AppModel).
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
                                 willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
-        []
+        guard let id = notification.request.content.userInfo["r"] as? String else { return [] }
+        let first = await MainActor.run { model?.claimAlert(id) ?? false }
+        return first ? [.sound] : []
     }
 
     /// Tapping the notification opens KeyTap on the request (iOS lets only an app on screen read NFC,
     /// so the PIN and the tap happen there).
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
-        await MainActor.run { model?.notificationOpened() }
+        let id = response.notification.request.content.userInfo["r"] as? String
+        await MainActor.run { model?.notificationOpened(requestID: id) }
     }
 }
 
@@ -57,6 +60,12 @@ enum Notifications {
             return requestID == nil ? n.date < Date().addingTimeInterval(-120) : r == requestID
         }.map(\.request.identifier)
         if !ids.isEmpty { center.removeDeliveredNotifications(withIdentifiers: ids) }
+    }
+
+    /// Its notification is still in Notification Center: it already made its sound.
+    static func isDelivered(requestID: String) async -> Bool {
+        await UNUserNotificationCenter.current().deliveredNotifications()
+            .contains { $0.request.content.userInfo["r"] as? String == requestID }
     }
 
     /// 1 while a request waits, 0 once none does. Needs notification permission with badges.

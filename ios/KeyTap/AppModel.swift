@@ -2,6 +2,7 @@ import CryptoKit
 import Foundation
 import KeyTapCore
 import Observation
+import OSLog
 import UIKit
 import UserNotifications
 
@@ -34,12 +35,22 @@ final class AppModel {
     var request: ApprovalRequest? {
         didSet { if request?.id != oldValue?.id { Notifications.setBadge(request == nil ? 0 : 1) } }
     }
-    /// The computers answered at least once since KeyTap came to the screen. A request already waiting at
-    /// that first answer is the one the user opened the app for (from its notification, or from the icon):
-    /// it does not chime. Not a time window: after unlocking, Wi-Fi and TLS can take seconds. Reset only
-    /// when the app goes to the background — the NFC sheet makes it inactive too, and the request queued
-    /// behind the one just answered must still chime.
+    // MARK: one sound per request
+    //
+    // A request makes a sound once, whichever way it reaches the user: its notification (on the lock
+    // screen, or with KeyTap open through willPresent) or the open app's poll. On top of that, the open app
+    // stays quiet for what was already waiting when it came back to the screen — the user is looking at it:
+    //   - every request id that sounded, was notified or was simply seen is in `alerted`, for good: a
+    //     reconnect glitch that hides and re-shows a request never sounds it again;
+    //   - a computer's first answer after returning from the background (`contacted`), however long the
+    //     reconnect takes, and anything in the first seconds after the return, are taken as seen;
+    //   - a request whose notification is still in Notification Center already sounded.
+    // The NFC sheet only makes the app inactive: it is not a return, so the next request still sounds.
+    private var alerted: Set<String> = []
     private var contacted: Set<String> = []
+    private var inBackground = true
+    private var cameBackAt = Date.distantPast
+    private static let settle: TimeInterval = 4
     /// The computer the shown request came from.
     private(set) var requestFrom: Pairing?
     private var requestBytes = Data()
@@ -254,7 +265,32 @@ final class AppModel {
     /// Home, lock or another app: the next return is a fresh look at whatever waits.
     func leftScreen() {
         contacted = []
+        inBackground = true
     }
+
+    func becameActive() {
+        guard inBackground else { return } // back from the NFC sheet or Control Center: not a return
+        inBackground = false
+        cameBackAt = .now
+    }
+
+    /// Claims the one sound of a request; false if it already had it (or was already seen).
+    func claimAlert(_ id: String) -> Bool { alerted.insert(id).inserted }
+
+    private func announce(_ req: ApprovalRequest, firstContact: Bool) async {
+        guard claimAlert(req.id) else { return Self.log.debug("sound \(req.id, privacy: .public): already had it") }
+        if firstContact || inBackground || Date.now.timeIntervalSince(cameBackAt) < Self.settle {
+            return Self.log.debug("sound \(req.id, privacy: .public): quiet, waiting when the app came back")
+        }
+        if await Notifications.isDelivered(requestID: req.id) {
+            return Self.log.debug("sound \(req.id, privacy: .public): its notification sounded")
+        }
+        guard request?.id == req.id else { return }
+        Self.log.debug("sound \(req.id, privacy: .public): play")
+        Notifications.chime()
+    }
+
+    private static let log = Logger(subsystem: "me.keytap.app", category: "sound")
 
     func stopPolling() {
         pollTask?.cancel()
@@ -312,7 +348,7 @@ final class AppModel {
                     requestFrom = p
                     request = req
                     // With KeyTap open there is no banner: the chime is what says the next one is here.
-                    if !firstContact { Notifications.chime() }
+                    await announce(req, firstContact: firstContact)
                 }
             }
         } catch {
@@ -454,7 +490,8 @@ final class AppModel {
         pushProblem = "iOS could not register for notifications: \(error.localizedDescription)"
     }
 
-    func notificationOpened() {
+    func notificationOpened(requestID: String?) {
+        if let requestID { _ = claimAlert(requestID) }
         Task { await pollOnce() }
     }
 

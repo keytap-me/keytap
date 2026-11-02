@@ -31,6 +31,7 @@ struct KeyTapApp: App {
             .onChange(of: scenePhase, initial: true) { _, phase in
                 if phase == .active {
                     delegate.model = model
+                    model.becameActive()
                     model.startPolling()
                     model.refreshPushRegistration()
                     Task {
