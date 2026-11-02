@@ -39,7 +39,8 @@ struct KeyTapApp: App {
                         if model.request == nil { Notifications.setBadge(0) }
                     }
                 } else {
-                    model.stopPolling()
+                    model.stopPolling() // also under the NFC sheet (inactive): the tap fetches the chain itself
+                    if phase == .background { model.leftScreen() }
                 }
             }
         }

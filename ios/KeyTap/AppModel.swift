@@ -36,7 +36,9 @@ final class AppModel {
     }
     /// The computers answered at least once since KeyTap came to the screen. A request already waiting at
     /// that first answer is the one the user opened the app for (from its notification, or from the icon):
-    /// it does not chime. Not a time window: after unlocking, Wi-Fi and TLS can take seconds.
+    /// it does not chime. Not a time window: after unlocking, Wi-Fi and TLS can take seconds. Reset only
+    /// when the app goes to the background — the NFC sheet makes it inactive too, and the request queued
+    /// behind the one just answered must still chime.
     private var contacted: Set<String> = []
     /// The computer the shown request came from.
     private(set) var requestFrom: Pairing?
@@ -241,13 +243,17 @@ final class AppModel {
 
     func startPolling() {
         guard pollTask == nil, !pairings.isEmpty, !isDemo else { return }
-        contacted = []
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.pollOnce()
                 try? await Task.sleep(for: .seconds(1))
             }
         }
+    }
+
+    /// Home, lock or another app: the next return is a fresh look at whatever waits.
+    func leftScreen() {
+        contacted = []
     }
 
     func stopPolling() {
