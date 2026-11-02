@@ -34,9 +34,10 @@ final class AppModel {
     var request: ApprovalRequest? {
         didSet { if request?.id != oldValue?.id { Notifications.setBadge(request == nil ? 0 : 1) } }
     }
-    /// When polling (re)started: a request found in the first moments after opening the app is the one
-    /// the user opened it for, so it does not chime.
-    private var pollingSince = Date.distantPast
+    /// The computers answered at least once since KeyTap came to the screen. A request already waiting at
+    /// that first answer is the one the user opened the app for (from its notification, or from the icon):
+    /// it does not chime. Not a time window: after unlocking, Wi-Fi and TLS can take seconds.
+    private var contacted: Set<String> = []
     /// The computer the shown request came from.
     private(set) var requestFrom: Pairing?
     private var requestBytes = Data()
@@ -240,7 +241,7 @@ final class AppModel {
 
     func startPolling() {
         guard pollTask == nil, !pairings.isEmpty, !isDemo else { return }
-        pollingSince = .now
+        contacted = []
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.pollOnce()
@@ -269,7 +270,9 @@ final class AppModel {
             return
         }
         do {
-            switch try await client.poll() {
+            let state = try await client.poll()
+            let firstContact = contacted.insert(p.id).inserted
+            switch state {
             case .idle:
                 links[p.id] = .waiting
                 lastContact = .now
@@ -303,7 +306,7 @@ final class AppModel {
                     requestFrom = p
                     request = req
                     // With KeyTap open there is no banner: the chime is what says the next one is here.
-                    if Date.now.timeIntervalSince(pollingSince) > 2 { Notifications.chime() }
+                    if !firstContact { Notifications.chime() }
                 }
             }
         } catch {
