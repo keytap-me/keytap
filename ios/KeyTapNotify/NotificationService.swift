@@ -24,6 +24,7 @@ final class NotificationService: UNNotificationServiceExtension {
             content.body = "Open KeyTap to review it."
             content.threadIdentifier = "keytap"
             content.relevanceScore = 1
+            content.sound = UNNotificationSound(named: UNNotificationSoundName(RequestSound.current.fileName))
             content.badge = 1 // cleared by the app, or by the silent "clear" push once it is answered
         }
         contentHandler(content)

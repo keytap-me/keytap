@@ -1,3 +1,4 @@
+import KeyTapCore
 import SwiftUI
 
 /// The opt-in, used at pairing and in Settings. Says plainly what turning it on changes.
@@ -41,5 +42,28 @@ struct NotificationSection: View {
             return "Not on \(waiting.joined(separator: ", ")) yet — it is sent the next time that computer is listening, e.g. run age-plugin-yubikey-phone test."
         }
         return "On for \(model.pairings.map(\.name).joined(separator: ", "))."
+    }
+}
+
+/// The sound of a new request: in the open app, and for a notification when they are on.
+struct RequestSoundSection: View {
+    @State private var sound = RequestSound.current
+
+    var body: some View {
+        Section {
+            Picker(selection: $sound) {
+                ForEach(RequestSound.allCases) { s in Text(s.title).tag(s) }
+            } label: {
+                Label("Request Sound", systemImage: "speaker.wave.2")
+            }
+            .pickerStyle(.navigationLink)
+            .accessibilityIdentifier("request-sound")
+            .onChange(of: sound) { _, s in
+                RequestSound.current = s
+                Notifications.chime(s) // preview
+            }
+        } footer: {
+            Text("Played when a request arrives while KeyTap is open, and for its notification. With the Ring/Silent switch on silent, the iPhone vibrates instead.")
+        }
     }
 }

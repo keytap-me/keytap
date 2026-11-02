@@ -71,9 +71,26 @@ enum Notifications {
         try? await UNUserNotificationCenter.current().setBadgeCount(left ? 1 : 0)
     }
 
-    /// A request appeared while KeyTap is on screen: the system's notification sound (vibration only
-    /// with the ring switch off), so the next request is not missed after answering one.
-    static func chime() {
-        AudioServicesPlayAlertSound(SystemSoundID(1007))
+    /// A request appeared while KeyTap is on screen: the sound chosen in Settings (vibration only with
+    /// the ring switch off), so the next request is not missed after answering one.
+    @MainActor static func chime(_ sound: RequestSound = .current) {
+        guard sound != .vibrate, let id = soundID(sound) else {
+            AudioServicesPlayAlertSound(kSystemSoundID_Vibrate)
+            return
+        }
+        AudioServicesPlayAlertSound(id)
+    }
+
+    @MainActor private static var soundIDs: [RequestSound: SystemSoundID] = [:]
+
+    @MainActor private static func soundID(_ sound: RequestSound) -> SystemSoundID? {
+        if let id = soundIDs[sound] { return id }
+        let name = (sound.fileName as NSString).deletingPathExtension
+        guard let url = Bundle.main.url(forResource: name, withExtension: "wav")
+                ?? Bundle.main.url(forResource: name, withExtension: "wav", subdirectory: "Sounds") else { return nil }
+        var id: SystemSoundID = 0
+        guard AudioServicesCreateSystemSoundID(url as CFURL, &id) == noErr else { return nil }
+        soundIDs[sound] = id
+        return id
     }
 }

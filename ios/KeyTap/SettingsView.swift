@@ -26,10 +26,11 @@ struct SettingsView: View {
                     } header: {
                         Text("Computers")
                     } footer: {
-                        Text("This iPhone answers every computer paired here — a laptop, a desktop at home, a workstation at the office. Pairing the same computer again replaces its pairing, e.g. to register other YubiKeys.")
+                        Text("This iPhone answers every computer paired here — a laptop, a desktop at home, a workstation at the office. Pairing the same computer again replaces its pairing.")
                     }
                     NotificationSection()
                 }
+                RequestSoundSection()
                 Section {
                     NavigationLink("Test YubiKey (PIN + Tap)") {
                         SelfTestForm(onPassed: nil).navigationTitle("Test YubiKey").navigationBarTitleDisplayMode(.inline)
