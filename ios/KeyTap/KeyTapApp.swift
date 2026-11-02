@@ -33,7 +33,11 @@ struct KeyTapApp: App {
                     delegate.model = model
                     model.startPolling()
                     model.refreshPushRegistration()
-                    Task { await Notifications.remove(requestID: nil) }
+                    Task {
+                        await Notifications.remove(requestID: nil)
+                        // a badge left by a push for a request that is gone; the poll sets it again if not
+                        if model.request == nil { Notifications.setBadge(0) }
+                    }
                 } else {
                     model.stopPolling()
                 }

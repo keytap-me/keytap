@@ -30,7 +30,13 @@ final class AppModel {
     /// Per computer: can the phone reach it right now.
     private(set) var links: [String: Link] = [:]
     private(set) var lastContact: Date?
-    var request: ApprovalRequest?
+    /// The app icon carries a badge exactly while a request waits for an answer.
+    var request: ApprovalRequest? {
+        didSet { if request?.id != oldValue?.id { Notifications.setBadge(request == nil ? 0 : 1) } }
+    }
+    /// When polling (re)started: a request found in the first moments after opening the app is the one
+    /// the user opened it for, so it does not chime.
+    private var pollingSince = Date.distantPast
     /// The computer the shown request came from.
     private(set) var requestFrom: Pairing?
     private var requestBytes = Data()
@@ -234,6 +240,7 @@ final class AppModel {
 
     func startPolling() {
         guard pollTask == nil, !pairings.isEmpty, !isDemo else { return }
+        pollingSince = .now
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.pollOnce()
@@ -295,6 +302,8 @@ final class AppModel {
                     requestBytes = bytes
                     requestFrom = p
                     request = req
+                    // With KeyTap open there is no banner: the chime is what says the next one is here.
+                    if Date.now.timeIntervalSince(pollingSince) > 2 { Notifications.chime() }
                 }
             }
         } catch {
@@ -396,7 +405,7 @@ final class AppModel {
     func setNotifications(_ on: Bool) async {
         pushProblem = nil
         if on {
-            let granted = (try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound])) ?? false
+            let granted = (try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge])) ?? false
             guard granted else {
                 pushProblem = "Notifications are turned off for KeyTap in iOS Settings."
                 return
@@ -418,7 +427,11 @@ final class AppModel {
             return
         }
         #endif
-        if notificationsWanted { UIApplication.shared.registerForRemoteNotifications() }
+        if notificationsWanted {
+            // Builds before 1.1 asked without .badge; iOS adds it silently if notifications are still allowed.
+            Task { _ = try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) }
+            UIApplication.shared.registerForRemoteNotifications()
+        }
     }
 
     func didRegisterForPush(token: String) {

@@ -1,3 +1,4 @@
+import AudioToolbox
 import KeyTapCore
 import UIKit
 import UserNotifications
@@ -25,11 +26,15 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
     /// The silent "clear" push: the request was answered, declined or expired on the computer.
     func application(_ application: UIApplication,
                      didReceiveRemoteNotification userInfo: [AnyHashable: Any]) async -> UIBackgroundFetchResult {
-        if let id = userInfo["clear"] as? String { await Notifications.remove(requestID: id) }
+        if let id = userInfo["clear"] as? String {
+            await Notifications.remove(requestID: id)
+            await Notifications.badgeFromDelivered()
+        }
         return .noData
     }
 
-    /// With KeyTap open the request sheet is already on screen: no banner on top of it.
+    /// With KeyTap open the request sheet is already on screen: no banner on top of it (the app chimes
+    /// itself when the poll shows the request, see AppModel.poll).
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
                                 willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
         []
@@ -52,5 +57,23 @@ enum Notifications {
             return requestID == nil ? n.date < Date().addingTimeInterval(-120) : r == requestID
         }.map(\.request.identifier)
         if !ids.isEmpty { center.removeDeliveredNotifications(withIdentifiers: ids) }
+    }
+
+    /// 1 while a request waits, 0 once none does. Needs notification permission with badges.
+    static func setBadge(_ n: Int) {
+        UNUserNotificationCenter.current().setBadgeCount(n) { _ in }
+    }
+
+    /// In the background the app knows only the delivered notifications: badge while one is left.
+    static func badgeFromDelivered() async {
+        let left = await UNUserNotificationCenter.current().deliveredNotifications()
+            .contains { $0.request.content.userInfo["r"] != nil }
+        try? await UNUserNotificationCenter.current().setBadgeCount(left ? 1 : 0)
+    }
+
+    /// A request appeared while KeyTap is on screen: the system's notification sound (vibration only
+    /// with the ring switch off), so the next request is not missed after answering one.
+    static func chime() {
+        AudioServicesPlayAlertSound(SystemSoundID(1007))
     }
 }
