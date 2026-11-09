@@ -30,7 +30,8 @@ final class AppModel {
     var pairing: Pairing? { pairings.last }
     /// Per computer: can the phone reach it right now.
     private(set) var links: [String: Link] = [:]
-    private(set) var lastContact: Date?
+    /// One client (one HTTPS session) per computer, for as long as it is paired. Not observed.
+    @ObservationIgnored private var clients: [String: BridgeClient] = [:]
     /// The app icon carries a badge exactly while a request waits for an answer.
     var request: ApprovalRequest? {
         didSet { if request?.id != oldValue?.id { Notifications.setBadge(request == nil ? 0 : 1) } }
@@ -151,8 +152,17 @@ final class AppModel {
     }
 
     private func client(for p: Pairing) -> BridgeClient? {
+        if let c = clients[p.id] { return c }
         guard let tok = Keychain.get(p.tokenAccount) else { return nil }
-        return BridgeClient(host: p.host, pin: p.pin, token: String(decoding: tok, as: UTF8.self))
+        let c = BridgeClient(host: p.host, pin: p.pin, token: String(decoding: tok, as: UTF8.self))
+        clients[p.id] = c
+        return c
+    }
+
+    /// Sets a computer's link only when it changes: the poll runs every second, and every write
+    /// to an observed property redraws the home screen.
+    private func setLink(_ p: Pairing, _ l: Link) {
+        if links[p.id] != l { links[p.id] = l }
     }
 
     /// All computers together: ready if any can be reached, an error only if none can.
@@ -177,6 +187,7 @@ final class AppModel {
         guard Keychain.set(p.tokenAccount, Data(token.utf8)) else { throw KeychainError.writeFailed }
         SharedKeychain.setNotifyKey(push == nil ? nil : notifyKey, for: p.id)
         if notificationsWanted && push == nil { pushPending.insert(p.id) } else { pushPending.remove(p.id) }
+        clients[p.id] = nil // a new token: the next poll opens a client with it
         pairings.removeAll { $0.id == p.id }
         pairings.append(p)
         try savePairings()
@@ -192,6 +203,7 @@ final class AppModel {
         pairings.removeAll { $0.id == p.id }
         try? savePairings()
         links[p.id] = nil
+        clients[p.id] = nil
         pushPending.remove(p.id)
         if requestFrom?.id == p.id { request = nil; requestFrom = nil }
         if pairings.isEmpty { forget() }
@@ -242,6 +254,7 @@ final class AppModel {
         DeviceKey.reset()
         pairings = []
         links = [:]
+        clients = [:]
         pushPending = []
         setupDone = false
         dryRunPassed = false
@@ -308,7 +321,7 @@ final class AppModel {
 
     private func poll(_ p: Pairing) async {
         guard let client = client(for: p) else {
-            links[p.id] = .error("The pairing token for \(p.name) is missing from the keychain. Remove it and pair again.")
+            setLink(p, .error("The pairing token for \(p.name) is missing from the keychain. Remove it and pair again."))
             return
         }
         do {
@@ -316,17 +329,15 @@ final class AppModel {
             let firstContact = contacted.insert(p.id).inserted
             switch state {
             case .idle:
-                links[p.id] = .waiting
-                lastContact = .now
+                setLink(p, .waiting)
                 // between the links of a chain (after "held") the computer has nothing open for a moment
                 if requestFrom?.id == p.id, !approving, chainRequest == nil { clearRequest() }
                 await syncPushIfNeeded(client, p)
             case .notListening:
-                links[p.id] = .notListening
+                setLink(p, .notListening)
                 if requestFrom?.id == p.id, !approving { clearRequest() }
             case .ended(let id, let reason):
-                links[p.id] = .waiting
-                lastContact = .now
+                setLink(p, .waiting)
                 guard requestFrom?.id == p.id, let shown = request,
                       id.isEmpty || id == shown.id || id == chainRequest?.0.id else { break }
                 if approving {
@@ -337,8 +348,7 @@ final class AppModel {
                     clearRequest()
                 }
             case .pending(let req, let bytes):
-                links[p.id] = .waiting
-                lastContact = .now
+                setLink(p, .waiting)
                 await syncPushIfNeeded(client, p)
                 if req.continues != nil { break } // a chain link: the tap in progress fetches it itself
                 let free = request == nil || requestFrom?.id == p.id
@@ -352,7 +362,7 @@ final class AppModel {
                 }
             }
         } catch {
-            links[p.id] = .error("\(p.name): " + ((error as? LocalizedError)?.errorDescription ?? error.localizedDescription))
+            setLink(p, .error("\(p.name): " + ((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)))
         }
     }
 

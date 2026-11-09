@@ -44,38 +44,52 @@ public enum BridgeError: Error, LocalizedError, Equatable {
     }
 }
 
-public final class BridgeClient: NSObject, URLSessionDelegate, @unchecked Sendable {
+/// One client per paired computer, kept for as long as the pairing is in use: it owns one URLSession,
+/// so the TLS connection to the bridge is reused between polls and nothing piles up. (A URLSession
+/// retains its delegate and lives until invalidated: a client per poll leaked a session per second.)
+public final class BridgeClient: @unchecked Sendable {
     let base: URL
     let pin: Data
     let token: String?
-    private lazy var session = URLSession(configuration: {
-        let c = URLSessionConfiguration.ephemeral
-        c.timeoutIntervalForRequest = 8
-        c.waitsForConnectivity = false
-        c.urlCache = nil
-        return c
-    }(), delegate: self, delegateQueue: nil)
-    private let pinFailed = LockedFlag()
+    private let pinning: PinningDelegate
+    private let session: URLSession
 
     public init(host: String, pin: Data, token: String?) {
         self.base = URL(string: "https://\(host)")!
         self.pin = pin
         self.token = token
+        pinning = PinningDelegate(pin: pin)
+        let c = URLSessionConfiguration.ephemeral
+        c.timeoutIntervalForRequest = 8
+        c.waitsForConnectivity = false
+        c.urlCache = nil
+        c.httpMaximumConnectionsPerHost = 1
+        session = URLSession(configuration: c, delegate: pinning, delegateQueue: nil)
     }
 
-    public func urlSession(_ session: URLSession, didReceive challenge: URLAuthenticationChallenge) async
-        -> (URLSession.AuthChallengeDisposition, URLCredential?) {
-        guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
-              let trust = challenge.protectionSpace.serverTrust,
-              let leaf = (SecTrustCopyCertificateChain(trust) as? [SecCertificate])?.first else {
-            return (.cancelAuthenticationChallenge, nil)
+    deinit { session.invalidateAndCancel() }
+
+    /// Pins the bridge's self-signed certificate. Separate from the client so the session's strong
+    /// reference to its delegate does not keep the client alive.
+    private final class PinningDelegate: NSObject, URLSessionDelegate, @unchecked Sendable {
+        let pin: Data
+        let failed = LockedFlag()
+        init(pin: Data) { self.pin = pin }
+
+        func urlSession(_ session: URLSession, didReceive challenge: URLAuthenticationChallenge) async
+            -> (URLSession.AuthChallengeDisposition, URLCredential?) {
+            guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
+                  let trust = challenge.protectionSpace.serverTrust,
+                  let leaf = (SecTrustCopyCertificateChain(trust) as? [SecCertificate])?.first else {
+                return (.cancelAuthenticationChallenge, nil)
+            }
+            let der = SecCertificateCopyData(leaf) as Data
+            guard Data(SHA256.hash(data: der)) == pin else {
+                failed.set()
+                return (.cancelAuthenticationChallenge, nil)
+            }
+            return (.useCredential, URLCredential(trust: trust))
         }
-        let der = SecCertificateCopyData(leaf) as Data
-        guard Data(SHA256.hash(data: der)) == pin else {
-            pinFailed.set()
-            return (.cancelAuthenticationChallenge, nil)
-        }
-        return (.useCredential, URLCredential(trust: trust))
     }
 
     private func request(_ path: String, method: String = "GET", body: Data? = nil) -> URLRequest {
@@ -93,7 +107,7 @@ public final class BridgeClient: NSObject, URLSessionDelegate, @unchecked Sendab
             let (data, resp) = try await session.data(for: r)
             return (data, (resp as? HTTPURLResponse)?.statusCode ?? 0)
         } catch {
-            if pinFailed.get() { throw BridgeError.pinMismatch }
+            if pinning.failed.get() { throw BridgeError.pinMismatch }
             throw error
         }
     }

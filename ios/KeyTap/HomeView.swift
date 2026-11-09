@@ -12,7 +12,9 @@ struct HomeView: View {
                 Image(systemName: symbol)
                     .font(.system(size: 64, weight: .light))
                     .foregroundStyle(.tint)
-                    .symbolEffect(.pulse, isActive: model.link == .notListening || model.link == .waiting)
+                    // Pulses while the first contact is being made. Not in the resting state: an
+                    // animation that never ends redraws the screen 60 times a second for hours.
+                    .symbolEffect(.pulse, isActive: model.link == .unknown)
                 Text(title).font(.title3.weight(.semibold))
                 Text(subtitle)
                     .font(.subheadline)
