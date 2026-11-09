@@ -17,6 +17,8 @@ struct RequestView: View {
     @State private var lastTry = false
     @State private var pinBlocked = false
     @State private var showPUK = false
+    /// Set once, when the expiry passes (a single wake-up, not a redraw of the sheet every second).
+    @State private var expired = false
     @FocusState private var pinFocused: Bool
 
     private var keys: [ApprovalRequest.KeyInfo] { request.offeredKeys }
@@ -24,101 +26,109 @@ struct RequestView: View {
 
     var body: some View {
         NavigationStack {
-            TimelineView(.periodic(from: .now, by: 1)) { ctx in
-                let left = Int(request.expiresAt.timeIntervalSince(ctx.date).rounded(.down))
-                List {
-                    if let note = request.displayNote {
-                        Section {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Label("Note from \(request.user)", systemImage: "text.bubble")
-                                    .font(.caption).foregroundStyle(.secondary)
-                                Text(note)
-                                    .font(.callout)
-                                    .textSelection(.enabled)
-                                    .accessibilityIdentifier("request-note")
-                            }
-                            .accessibilityElement(children: .combine)
-                        } footer: {
-                            Text("Written on the computer. It explains the request; the code and the command are what you approve.")
-                        }
-                    }
+            List {
+                if let note = request.displayNote {
                     Section {
-                        VStack(spacing: 4) {
-                            Text("Code in your terminal").font(.caption).foregroundStyle(.secondary)
-                            Text(request.code)
-                                .font(.system(size: 34, weight: .semibold, design: .monospaced))
-                                .accessibilityLabel(request.code.map(String.init).joined(separator: " "))
+                        VStack(alignment: .leading, spacing: 4) {
+                            Label("Note from \(request.user)", systemImage: "text.bubble")
+                                .font(.caption).foregroundStyle(.secondary)
+                            Text(note)
+                                .font(.callout)
+                                .textSelection(.enabled)
+                                .accessibilityIdentifier("request-note")
+                        }
+                        .accessibilityElement(children: .combine)
+                    } footer: {
+                        Text("Written on the computer. It explains the request; the code and the command are what you approve.")
+                    }
+                }
+                Section {
+                    VStack(spacing: 4) {
+                        Text("Code in your terminal").font(.caption).foregroundStyle(.secondary)
+                        Text(request.code)
+                            .font(.system(size: 34, weight: .semibold, design: .monospaced))
+                            .accessibilityLabel(request.code.map(String.init).joined(separator: " "))
+                        // Only this line ticks: a TimelineView around the whole list redrew every section once a second.
+                        TimelineView(.periodic(from: .now, by: 1)) { ctx in
+                            let left = Int(request.expiresAt.timeIntervalSince(ctx.date).rounded(.down))
                             Text("\(request.host) · \(request.user) · \(left > 0 ? "expires in \(left) s" : "expired")")
                                 .font(.footnote)
                                 .foregroundStyle(left < 20 ? .red : .secondary)
                                 .monospacedDigit()
                         }
-                        .frame(maxWidth: .infinity)
                     }
-                    if request.isUnknownKind {
-                        Section {
-                            Label("This request needs a newer version of KeyTap. Update the app, then run the command again.",
-                                  systemImage: "arrow.down.app")
-                                .font(.callout)
-                        }
-                    } else if request.isTest {
-                        Section {
-                            Label("Dry run — nothing is decrypted. It checks the computer, this phone, your PIN and the tap.",
-                                  systemImage: "checkmark.shield")
-                                .font(.callout)
-                        }
-                    } else if let ssh = request.ssh {
-                        Section {
-                            Label(ssh.isLogin ? "Sign in as \(ssh.login ?? "?")" : "SSH signature", systemImage: "terminal.fill")
-                                .font(.callout.weight(.semibold))
-                            if let name = ssh.keyName ?? ssh.keyFingerprint {
-                                LabeledContent("Key") { Text(name).font(.caption.monospaced()).lineLimit(1).truncationMode(.middle) }
-                            }
-                            if let host = ssh.hostKeyFingerprint {
-                                LabeledContent("Server key") { Text(host).font(.caption.monospaced()).lineLimit(1).truncationMode(.middle) }
-                            }
-                            commandRow
-                        } footer: {
-                            Text(ssh.isLogin
-                                 ? "Your YubiKey signs this one SSH login with its FIDO2 key. The key never leaves the YubiKey."
-                                 : "Your YubiKey signs with its FIDO2 SSH key. The key never leaves the YubiKey.")
-                        }
-                    } else {
-                        Section {
-                            if let f = request.targetFile {
-                                PathRow(symbol: "doc", path: f)
-                            }
-                            if !request.cwd.isEmpty {
-                                PathRow(symbol: "folder", path: request.cwd)
-                            }
-                            commandRow
-                            if request.files.count > 1 || request.identities.count > 1 {
-                                LabeledContent("Files · YubiKeys", value: "\(request.files.count) · \(request.identities.map { String($0.serial) }.joined(separator: ", "))")
-                                    .font(.footnote)
-                            }
-                        }
+                    .frame(maxWidth: .infinity)
+                }
+                if request.isUnknownKind {
+                    Section {
+                        Label("This request needs a newer version of KeyTap. Update the app, then run the command again.",
+                              systemImage: "arrow.down.app")
+                            .font(.callout)
                     }
-                    if let error {
-                        Section {
-                            Label(error, systemImage: lastTry ? "exclamationmark.octagon.fill" : "exclamationmark.triangle")
-                                .foregroundStyle(.red)
-                                .font(lastTry ? .callout.weight(.semibold) : .callout)
-                            if pinBlocked && !request.isSSH {
-                                Button("Unblock the PIN with the PUK", systemImage: "lock.open") { showPUK = true }
-                            }
+                } else if request.isTest {
+                    Section {
+                        Label("Dry run — nothing is decrypted. It checks the computer, this phone, your PIN and the tap.",
+                              systemImage: "checkmark.shield")
+                            .font(.callout)
+                    }
+                } else if let ssh = request.ssh {
+                    Section {
+                        Label(ssh.isLogin ? "Sign in as \(ssh.login ?? "?")" : "SSH signature", systemImage: "terminal.fill")
+                            .font(.callout.weight(.semibold))
+                        if let name = ssh.keyName ?? ssh.keyFingerprint {
+                            LabeledContent("Key") { Text(name).font(.caption.monospaced()).lineLimit(1).truncationMode(.middle) }
+                        }
+                        if let host = ssh.hostKeyFingerprint {
+                            LabeledContent("Server key") { Text(host).font(.caption.monospaced()).lineLimit(1).truncationMode(.middle) }
+                        }
+                        commandRow
+                    } footer: {
+                        Text(ssh.isLogin
+                             ? "Your YubiKey signs this one SSH login with its FIDO2 key. The key never leaves the YubiKey."
+                             : "Your YubiKey signs with its FIDO2 SSH key. The key never leaves the YubiKey.")
+                    }
+                } else {
+                    Section {
+                        if let f = request.targetFile {
+                            PathRow(symbol: "doc", path: f)
+                        }
+                        if !request.cwd.isEmpty {
+                            PathRow(symbol: "folder", path: request.cwd)
+                        }
+                        commandRow
+                        if request.files.count > 1 || request.identities.count > 1 {
+                            LabeledContent("Files · YubiKeys", value: "\(request.files.count) · \(request.identities.map { String($0.serial) }.joined(separator: ", "))")
+                                .font(.footnote)
                         }
                     }
                 }
-                .listSectionSpacing(.compact)
-                .contentMargins(.top, 8, for: .scrollContent)
-                .safeAreaInset(edge: .bottom) { actions(left: left) }
-                .onChange(of: left <= 0) { _, expired in if expired { error = "This request expired." } }
+                if let error {
+                    Section {
+                        Label(error, systemImage: lastTry ? "exclamationmark.octagon.fill" : "exclamationmark.triangle")
+                            .foregroundStyle(.red)
+                            .font(lastTry ? .callout.weight(.semibold) : .callout)
+                        if pinBlocked && !request.isSSH {
+                            Button("Unblock the PIN with the PUK", systemImage: "lock.open") { showPUK = true }
+                        }
+                    }
+                }
+            }
+            .listSectionSpacing(.compact)
+            .contentMargins(.top, 8, for: .scrollContent)
+            .safeAreaInset(edge: .bottom) { actions }
+            .task(id: request.id) {
+                expired = request.expiresAt <= .now
+                guard !expired else { return }
+                try? await Task.sleep(for: .seconds(request.expiresAt.timeIntervalSinceNow))
+                guard !Task.isCancelled else { return }
+                expired = true
+                error = "This request expired."
             }
             .navigationTitle(request.isTest ? "Dry Run" : request.ssh.map { $0.isLogin ? "Approve SSH Login" : "Approve SSH Signature" } ?? "Approve Decryption")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    if request.expiresAt < .now {
+                    if expired {
                         Button("Close") { model.dismissExpired() }
                     } else {
                         Button("Decline", role: .destructive) { Task { await decline() } }
@@ -209,7 +219,7 @@ struct RequestView: View {
     private var pinValid: Bool { request.isSSH ? (4...63).contains(pin.count) : (6...8).contains(pin.count) }
 
     /// PIN + approve, always on screen above the keyboard.
-    private func actions(left: Int) -> some View {
+    private var actions: some View {
         VStack(spacing: 10) {
             if !model.approvesInSoftware && !model.isDemo {
                 keyPicker
@@ -237,7 +247,7 @@ struct RequestView: View {
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
-            .disabled(busy || left <= 0 || request.isUnknownKind || (!model.approvesInSoftware && !pinValid))
+            .disabled(busy || expired || request.isUnknownKind || (!model.approvesInSoftware && !pinValid))
             .accessibilityIdentifier("approve")
             if !model.approvesInSoftware {
                 Text(pickedLabel.map { "Then hold \($0) to the top of the iPhone. The PIN goes only to that key — another key gets no PIN." }

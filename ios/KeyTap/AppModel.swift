@@ -34,7 +34,11 @@ final class AppModel {
     @ObservationIgnored private var clients: [String: BridgeClient] = [:]
     /// The app icon carries a badge exactly while a request waits for an answer.
     var request: ApprovalRequest? {
-        didSet { if request?.id != oldValue?.id { Notifications.setBadge(request == nil ? 0 : 1) } }
+        didSet {
+            guard request?.id != oldValue?.id else { return }
+            Notifications.setBadge(request == nil ? 0 : 1)
+            lastChange = .now
+        }
     }
     // MARK: one sound per request
     //
@@ -162,7 +166,9 @@ final class AppModel {
     /// Sets a computer's link only when it changes: the poll runs every second, and every write
     /// to an observed property redraws the home screen.
     private func setLink(_ p: Pairing, _ l: Link) {
-        if links[p.id] != l { links[p.id] = l }
+        guard links[p.id] != l else { return }
+        links[p.id] = l
+        lastChange = .now
     }
 
     /// All computers together: ready if any can be reached, an error only if none can.
@@ -270,9 +276,37 @@ final class AppModel {
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.pollOnce()
-                try? await Task.sleep(for: .seconds(1))
+                guard let interval = self?.pollInterval else { return }
+                try? await Task.sleep(for: interval)
             }
         }
+    }
+
+    // MARK: poll cadence
+    //
+    // Once a second while something can change any moment: the first contact with a computer, a request on
+    // screen (a withdrawal must close it at once), the first half minute after a return to the screen (KeyTap
+    // was opened for a reason), and always when no push can announce the next request. With notifications on
+    // and KeyTap left open on the Ready screen, the push does the announcing (`pushArrived` polls at once), so
+    // the loop only checks every 10 s as a safety net: on cellular the radio can idle between polls instead of
+    // being kept up by a connection attempt every second.
+    @ObservationIgnored private var lastChange = Date.now
+    private static let quickFor: TimeInterval = 30
+    private static let slowPoll: Duration = .seconds(10)
+
+    private var pollInterval: Duration {
+        let pushAnnounces = notificationsWanted && pushToken != nil && pushPending.isEmpty
+        guard pushAnnounces, request == nil, !links.values.contains(.unknown),
+              Date.now.timeIntervalSince(lastChange) > Self.quickFor else { return .seconds(1) }
+        return Self.slowPoll
+    }
+
+    /// A push reached the phone while KeyTap is on screen: look now, and quickly for a while.
+    func pushArrived() {
+        guard !inBackground, pollTask != nil else { return }
+        lastChange = .now
+        stopPolling()
+        startPolling()
     }
 
     /// Home, lock or another app: the next return is a fresh look at whatever waits.
@@ -285,6 +319,7 @@ final class AppModel {
         guard inBackground else { return } // back from the NFC sheet or Control Center: not a return
         inBackground = false
         cameBackAt = .now
+        lastChange = .now
     }
 
     /// Claims the one sound of a request; false if it already had it (or was already seen).

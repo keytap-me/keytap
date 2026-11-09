@@ -121,10 +121,11 @@ func relayCall(ctx context.Context, relay, path string, body any) error {
 
 // pushNotifier wakes every opted-in phone for one request and clears the notification afterwards.
 type pushNotifier struct {
-	cfg  *Config
-	req  *Request
-	mu   sync.Mutex
-	sent []*Device
+	cfg      *Config
+	req      *Request
+	mu       sync.Mutex
+	sent     []*Device
+	answered []byte // the public key of the phone whose answer ended the request
 }
 
 func notifyPhones(cfg *Config, req *Request) *pushNotifier {
@@ -164,12 +165,24 @@ func notifyPhones(cfg *Config, req *Request) *pushNotifier {
 	return n
 }
 
-// clear removes the notification on every phone that got one (answered, declined or expired).
+// answeredBy notes the phone whose answer ended the request. It took its own notification down as it
+// answered, so clear() leaves it alone: a silent push would only launch it in the background for nothing.
+func (n *pushNotifier) answeredBy(d *Device) {
+	n.mu.Lock()
+	n.answered = d.PublicKey
+	n.mu.Unlock()
+}
+
+// clear removes the notification on every phone that got one and did not answer it (answered on another
+// phone, declined there, or expired).
 func (n *pushNotifier) clear() {
 	n.mu.Lock()
-	sent := n.sent
+	sent, answered := n.sent, n.answered
 	n.mu.Unlock()
 	for _, d := range sent {
+		if answered != nil && bytes.Equal(d.PublicKey, answered) {
+			continue
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 		relayCall(ctx, n.cfg.pushRelay(), "/v1/clear", map[string]any{"token": d.Push.Token, "env": d.Push.Env, "id": n.req.ID})
 		cancel()

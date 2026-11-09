@@ -76,6 +76,35 @@ func TestPushIsEndToEndEncryptedAndCleared(t *testing.T) {
 	}
 }
 
+// The phone that answers removes its own notification; the silent clear goes only to the others.
+func TestClearSkipsThePhoneThatAnswered(t *testing.T) {
+	t.Setenv("KEYTAP_DIR", t.TempDir())
+	var mu sync.Mutex
+	var clears []string
+	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var m map[string]any
+		json.NewDecoder(r.Body).Decode(&m)
+		if r.URL.Path == "/v1/clear" {
+			mu.Lock()
+			clears = append(clears, m["token"].(string))
+			mu.Unlock()
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer relay.Close()
+	t.Setenv("KEYTAP_PUSH_RELAY", relay.URL)
+
+	a := Device{Name: "answered", PublicKey: []byte{1}, Push: newPushConfig(&pushSettings{Token: strings.Repeat("aa", 32), Env: "sandbox"})}
+	b := Device{Name: "other", PublicKey: []byte{2}, Push: newPushConfig(&pushSettings{Token: strings.Repeat("bb", 32), Env: "sandbox"})}
+	cfg := &Config{Devices: []Device{a, b}}
+	pn := notifyPhones(cfg, &Request{ID: "req-2", ExpiresAt: time.Now().Add(time.Minute)})
+	pn.answeredBy(&cfg.Devices[0])
+	pn.clear()
+	if len(clears) != 1 || clears[0] != b.Push.Token {
+		t.Errorf("clear pushes went to %v; want only the phone that did not answer", clears)
+	}
+}
+
 func TestGoneTokenTurnsPushOff(t *testing.T) {
 	t.Setenv("KEYTAP_DIR", t.TempDir())
 	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusGone) }))

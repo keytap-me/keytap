@@ -29,6 +29,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         if let id = userInfo["clear"] as? String {
             await Notifications.remove(requestID: id)
             await Notifications.badgeFromDelivered()
+            await MainActor.run { model?.pushArrived() } // on screen: the shown request may have ended elsewhere
         }
         return .noData
     }
@@ -38,7 +39,10 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
                                 willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
         guard let id = notification.request.content.userInfo["r"] as? String else { return [] }
-        let first = await MainActor.run { model?.claimAlert(id) ?? false }
+        let first = await MainActor.run {
+            model?.pushArrived() // fetch the request now rather than at the next scheduled poll
+            return model?.claimAlert(id) ?? false
+        }
         return first ? [.sound] : []
     }
 

@@ -90,6 +90,13 @@ func (p *phoneSession) current() (cur *pending, endID, endReason string) {
 	return p.cur, p.endID, p.endReason
 }
 
+// notifier is the push notifier of the session's first request: nil until a phone was notified.
+func (p *phoneSession) notifier() *pushNotifier {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.push
+}
+
 func (p *phoneSession) fetched(id string) {
 	p.mu.Lock()
 	first := !p.engaged && p.cur != nil && p.cur.req.ID == id

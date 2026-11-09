@@ -134,6 +134,12 @@ func (s *server) handler() http.Handler {
 			http.Error(w, "already answered", http.StatusConflict)
 			return
 		}
+		if a.Held == nil {
+			// the phone takes its own notification down as it answers: no silent "clear" push for it
+			if pn := s.session.notifier(); pn != nil {
+				pn.answeredBy(dev)
+			}
+		}
 		if a.Held != nil {
 			logf("request %s: %q holds YubiKey %d, which this request is not for", p.req.Code, dev.Name, a.Held.Serial)
 		} else {
