@@ -111,7 +111,7 @@ if wants pair; then
     [ -n "$host" ] || die "pass --host: the address the iPhone reaches this computer at"
   fi
   step pair "Pair the iPhone with this computer ($host)" \
-    "On the iPhone: KeyTap ▸ Set Up (or Settings ▸ Add a Computer) ▸ Pair ▸ Paste from Clipboard ▸ Pair."
+    "On the iPhone: scan the code below with the camera (or paste the link in KeyTap ▸ Set Up ▸ Pair), then tap Pair."
   set -- pair --host "$host"
   [ -n "$port" ] && set -- "$@" --port "$port"
   [ -n "$name" ] && set -- "$@" --name "$name"
@@ -125,7 +125,11 @@ if wants pair; then
   done
   [ -n "$link" ] || { cat "$work/pair.out" >&2; die "the bridge printed no pairing link"; }
   say ""; say "   $link"; say ""
-  if command -v qrencode >/dev/null 2>&1; then qrencode -t ANSIUTF8 -m 2 "$link" | sed 's/^/   /'; say "   (or scan this with the iPhone's camera)"; fi
+  # the link as a QR code: the bridge draws it (v0.5.2 or later), else qrencode where there is one
+  if "$bridge" qr "$link" > "$work/qr.out" 2>/dev/null || { command -v qrencode >/dev/null 2>&1 && qrencode -t ANSIUTF8 -m 2 "$link" > "$work/qr.out"; }; then
+    sed 's/^/   /' "$work/qr.out"; say ""
+    say "   Scan this with the iPhone's camera and tap \"Open in KeyTap\" — or paste the link above."
+  fi
   if [ "$copy" = 1 ]; then
     for c in pbcopy wl-copy "xclip -selection clipboard"; do
       if command -v "${c%% *}" >/dev/null 2>&1 && printf '%s' "$link" | $c 2>/dev/null; then

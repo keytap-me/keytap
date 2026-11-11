@@ -19,6 +19,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -36,6 +37,7 @@ func runPair(args []string) error {
 	host := fs.String("host", "", "IP address the iPhone reaches this Mac at (required)")
 	port := fs.String("port", "", "port (default 8743 or the stored one); the listener binds --host only")
 	nameFlag := fs.String("name", "", "how the phone shows this computer (default: short hostname)")
+	noQR := fs.Bool("no-qr", false, "do not draw the link as a QR code")
 	relayFlag := fs.String("push-relay", "", "notification relay for phones that opt in (default "+defaultPushRelay+")")
 	fs.Parse(args)
 
@@ -126,7 +128,12 @@ func runPair(args []string) error {
 	srv := serve(ln, s.handler())
 	defer srv.Close()
 
-	fmt.Printf("Open this link on the iPhone (copy it from the terminal, then paste it into KeyTap):\n\n  %s\n\n", link)
+	// In a terminal: the link as a QR code — the iPhone's camera opens it in KeyTap, nothing to copy.
+	if !*noQR && isTerminal(os.Stdout) && printQR(os.Stdout, link, "  ") == nil {
+		fmt.Printf("\nScan this with the iPhone's camera and tap \"Open in KeyTap\" — or copy the link and paste it into KeyTap:\n\n  %s\n\n", link)
+	} else {
+		fmt.Printf("Open this link on the iPhone (copy it from the terminal, then paste it into KeyTap):\n\n  %s\n\n", link)
+	}
 	fmt.Printf("Waiting up to 10 minutes on %s …\n", cfg.Listen)
 	select {
 	case d := <-paired:

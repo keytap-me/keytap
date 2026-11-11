@@ -86,13 +86,17 @@ decryption to the real `age-plugin-yubikey`. Without the shim, point your own re
 ## Use
 
 ```sh
-age-plugin-yubikey-phone pair --host <IP of this computer>   # prints a keytap:// link: paste it into the app
+age-plugin-yubikey-phone pair --host <IP of this computer>   # shows a QR code: scan it with the iPhone's camera
 age-plugin-yubikey-phone test [--key LABEL]                   # dry run: PIN + tap + key agreement, nothing decrypted
 sops -d secrets.enc.yaml                                      # approve on the phone (keep KeyTap open)
 KEYTAP_NOTE="renewing the staging certs" sops -d secrets.enc.yaml   # with a note shown at the top of the request
 age-plugin-yubikey-phone devices                              # paired phones, and the YubiKeys offered to them
 age-plugin-yubikey-phone unpair "<phone name>"
 ```
+
+`pair` draws its one-time `keytap://` link as a QR code in the terminal (bridge v0.5.2 or later; `--no-qr`
+leaves it out) and prints the link as well, to paste into the app instead. The iPhone's camera offers
+"Open in KeyTap", which lands on the pairing page.
 
 The note is optional free text (up to 500 characters, control characters removed) from whoever
 starts the decrypt, e.g. why it is needed. The phone shows it first, as the requester's own words. It explains; it authorises nothing — the code,

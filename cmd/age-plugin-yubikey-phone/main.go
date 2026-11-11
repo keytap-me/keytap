@@ -160,6 +160,8 @@ func run(args []string) (int, error) {
 		return 0, runAgent(args[1:])
 	case "pair":
 		return 0, runPair(args[1:])
+	case "qr":
+		return 0, runQR(args[1:])
 	case "version", "--version":
 		if len(args) > 1 && args[1] == "--json" {
 			json.NewEncoder(os.Stdout).Encode(map[string]any{"version": version, "protocol": protoVersion})
