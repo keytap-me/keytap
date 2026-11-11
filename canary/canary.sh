@@ -21,7 +21,8 @@
 #   --ssh-key FILE    FIDO2 key handle file (id_ed25519_sk); repeat for several. Default: $KEYTAP_SSH_KEY,
 #                     the `ssh` entries of keys.conf, ~/.ssh/id_ed25519_sk
 #   --no-copy         do not put the pairing link on the clipboard
-#   --hide-serials    leave the YubiKeys' serial numbers out of what is printed here (for a recording)
+#   --discreet        for a recording: print no serial numbers, key fingerprints or addresses here, and show
+#                     the pairing link as the QR code only (--hide-serials is the same)
 #   --yes             do not wait for Return before each step
 #
 # Nothing real is touched: the files are made here, in a temp directory, encrypted to the recipients named
@@ -46,7 +47,7 @@ while [ $# -gt 0 ]; do
     --key) key=$2; shift 2 ;;
     --ssh-key) sshkeys="$sshkeys$2$nl"; shift 2 ;;
     --no-copy) copy=0; shift ;;
-    --hide-serials) hide=1; shift ;;
+    --discreet|--hide-serials) hide=1; shift ;;
     --yes) yes=1; shift ;;
     -h|--help) sed -n '2,/^set -eu/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 0 ;;
     pair|dry-run|decrypt|decline|sops|ssh) steps="$steps $1"; shift ;;
@@ -96,6 +97,8 @@ say "Have ready: the iPhone with KeyTap open, and your YubiKey."
 
 recipients() { # every age recipient the identity file's comments name, comma-separated
   [ -f "$identities" ] || die "no identity file at $identities (age-plugin-yubikey --identity > that file; KEYTAP_IDENTITIES overrides)"
+  # a copy next to the throwaway files (it holds no secret), so the command the phone shows is short
+  cp "$identities" "$work/yubikeys.txt"
   r=$(sed -n 's/^#.*Recipient: *\(age1yubikey1[0-9a-z]*\).*/\1/p' "$identities" | paste -sd, -)
   [ -n "$r" ] || die "$identities names no recipient (it needs age-plugin-yubikey's comments above each identity)"
   say "$r"
@@ -115,7 +118,8 @@ if wants pair; then
     [ -n "$host" ] || host=$(hostname -I 2>/dev/null | awk '{print $1}' || true)
     [ -n "$host" ] || die "pass --host: the address the iPhone reaches this computer at"
   fi
-  step pair "Pair the iPhone with this computer ($host)" \
+  shown=" ($host)"; [ "$hide" = 0 ] || shown=""
+  step pair "Pair the iPhone with this computer$shown" \
     "On the iPhone: scan the code below with the camera (or paste the link in KeyTap ▸ Set Up ▸ Pair), then tap Pair."
   set -- pair --host "$host"
   [ -n "$port" ] && set -- "$@" --port "$port"
@@ -129,16 +133,19 @@ if wants pair; then
     sleep 0.1
   done
   [ -n "$link" ] || { cat "$work/pair.out" >&2; die "the bridge printed no pairing link"; }
-  say ""; say "   $link"; say ""
   # the link as a QR code: the bridge draws it (v0.5.2 or later), else qrencode where there is one
-  if "$bridge" qr "$link" > "$work/qr.out" 2>/dev/null || { command -v qrencode >/dev/null 2>&1 && qrencode -t ANSIUTF8 -m 2 "$link" > "$work/qr.out"; }; then
+  qr=0
+  if "$bridge" qr "$link" > "$work/qr.out" 2>/dev/null || { command -v qrencode >/dev/null 2>&1 && qrencode -t ANSIUTF8 -m 2 "$link" > "$work/qr.out"; }; then qr=1; fi
+  if [ "$qr" = 0 ] || [ "$hide" = 0 ]; then say ""; say "   $link"; fi
+  say ""
+  if [ "$qr" = 1 ]; then
     sed 's/^/   /' "$work/qr.out"; say ""
-    say "   Scan this with the iPhone's camera and tap \"Open in KeyTap\" — or paste the link above."
+    say "   Scan this with the iPhone's camera and tap \"Open in KeyTap\"."
   fi
   if [ "$copy" = 1 ]; then
     for c in pbcopy wl-copy "xclip -selection clipboard"; do
       if command -v "${c%% *}" >/dev/null 2>&1 && printf '%s' "$link" | $c 2>/dev/null; then
-        say "   The link is on this computer's clipboard (with Universal Clipboard: on the iPhone's too)."; break
+        say "   The link is also on this computer's clipboard, to paste into KeyTap."; break
       fi
     done
   fi
@@ -171,7 +178,7 @@ if wants decrypt; then
     "On the iPhone: approve — PIN, then hold the YubiKey to the iPhone. Only the 16-byte file key comes back."
   say "   \$ age -d canary.txt.age"
   (cd "$work" && KEYTAP_NOTE="KeyTap canary: decrypting a throwaway file made a moment ago. Approve it." \
-    age -d -i "$identities" -o "$work/canary.out" canary.txt.age </dev/null) 2>&1 | sed 's/^/   /' \
+    age -d -i yubikeys.txt -o canary.out canary.txt.age </dev/null) 2>&1 | sed 's/^/   /' \
     || true
   [ -f "$work/canary.out" ] && cmp -s "$work/canary.txt" "$work/canary.out" || die "age did not decrypt the file"
   say "   $(cat "$work/canary.out")"
@@ -187,7 +194,7 @@ if wants decline; then
     "On the iPhone: tap DECLINE. The computer must get nothing."
   say "   \$ age -d decline.txt.age"
   if (cd "$work" && KEYTAP_NOTE="KeyTap canary: DECLINE this one — the decryption has to fail." \
-       age -d -i "$identities" -o "$work/decline.out" decline.txt.age </dev/null) 2>"$work/decline.err"; then
+       age -d -i yubikeys.txt -o decline.out decline.txt.age </dev/null) 2>"$work/decline.err"; then
     die "the file was decrypted although the request should have been declined"
   fi
   sed 's/^/   /' "$work/decline.err"
@@ -229,10 +236,12 @@ ssh_step() {
   for k in $sshkeys; do
     case "$k" in "~/"*) k="$HOME/${k#\~/}" ;; esac
     [ -f "$k" ] && [ -f "$k.pub" ] || { IFS=$oldifs; skip ssh "key file $k (and $k.pub) not found"; return 0; }
-    set -- "$@" "$k"
+    # a copy next to the throwaway files (a handle, no key material), so the ssh command the phone shows is short
+    b=$(basename "$k"); cp "$k" "$work/$b"; cp "$k.pub" "$work/$b.pub"; chmod 600 "$work/$b"
+    set -- "$@" "$b"
   done
   IFS=$oldifs
-  if ! "$bridge" ssh-opts "$@" > "$work/ssh.opts" 2>"$work/ssh.opts.err"; then
+  if ! (cd "$work" && "$bridge" ssh-opts "$@") > "$work/ssh.opts" 2>"$work/ssh.opts.err"; then
     skip ssh "$(sed 's/^keytap: //' "$work/ssh.opts.err" | head -1)"; return 0
   fi
 
@@ -247,7 +256,7 @@ ssh_step() {
   [ -x "$ssh" ] && [ -x "$sshd" ] && [ -x "$keygen" ] || { skip ssh "OpenSSH (ssh, sshd, ssh-keygen) not found"; return 0; }
 
   "$keygen" -q -t ed25519 -N '' -f "$work/host_key"
-  for k in "$@"; do cat "$k.pub"; done > "$work/authorized_keys"
+  for k in "$@"; do cat "$work/$k.pub"; done > "$work/authorized_keys"
   chmod 600 "$work/authorized_keys"
   cat > "$work/sshd_config" <<EOF
 Port $sshport
@@ -275,7 +284,7 @@ EOF
   # shellcheck disable=SC2046
   set -- $(cat "$work/ssh.opts")
   IFS=$oldifs
-  out=$(KEYTAP_NOTE="KeyTap canary: SSH login to a throwaway sshd on this computer. Approve it." \
+  out=$(cd "$work" && KEYTAP_NOTE="KeyTap canary: SSH login to a throwaway sshd on this computer. Approve it." \
     SSH_ASKPASS="$work/askpass" SSH_ASKPASS_REQUIRE=force \
     "$ssh" -F /dev/null -p "$sshport" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=no \
     "$@" "$me@127.0.0.1" 'echo keytap-canary-logged-in' </dev/null 2>"$work/ssh.err") || {
