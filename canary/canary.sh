@@ -21,6 +21,7 @@
 #   --ssh-key FILE    FIDO2 key handle file (id_ed25519_sk); repeat for several. Default: $KEYTAP_SSH_KEY,
 #                     the `ssh` entries of keys.conf, ~/.ssh/id_ed25519_sk
 #   --no-copy         do not put the pairing link on the clipboard
+#   --hide-serials    leave the YubiKeys' serial numbers out of what is printed here (for a recording)
 #   --yes             do not wait for Return before each step
 #
 # Nothing real is touched: the files are made here, in a temp directory, encrypted to the recipients named
@@ -33,7 +34,7 @@ bridge=${KEYTAP_BRIDGE:-age-plugin-yubikey-phone}
 identities=${KEYTAP_IDENTITIES:-$HOME/.secure/age/yubikeys.agekey}
 keysconf=${KEYTAP_KEYS:-${KEYTAP_DIR:-$HOME/.secure/keytap}/keys.conf}
 sshport=${KEYTAP_CANARY_SSH_PORT:-12222}
-pair=0; host=""; port=""; name=""; key=""; copy=1; yes=0; steps=""; sshkeys=""
+pair=0; host=""; port=""; name=""; key=""; copy=1; yes=0; hide=0; steps=""; sshkeys=""
 nl='
 '
 while [ $# -gt 0 ]; do
@@ -45,6 +46,7 @@ while [ $# -gt 0 ]; do
     --key) key=$2; shift 2 ;;
     --ssh-key) sshkeys="$sshkeys$2$nl"; shift 2 ;;
     --no-copy) copy=0; shift ;;
+    --hide-serials) hide=1; shift ;;
     --yes) yes=1; shift ;;
     -h|--help) sed -n '2,/^set -eu/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 0 ;;
     pair|dry-run|decrypt|decline|sops|ssh) steps="$steps $1"; shift ;;
@@ -59,6 +61,9 @@ step() { # step <name> <title> <what to do on the phone>
   n=$((n + 1)); current=$1
   printf '\n── %d · %s\n   %s\n' "$n" "$2" "$3"
   if [ "$yes" = 0 ]; then printf '   Press Return to start … '; read -r _; fi
+}
+serials() { # the bridge's lines, without serial numbers when asked
+  if [ "$hide" = 1 ]; then sed -E 's/ \(YubiKey [0-9]+, slot [^)]*\)//; s/^( +[^ ]+) +[0-9]+$/\1/'; else cat; fi
 }
 ok() { passed="$passed $current"; say "   ✓ $*"; }
 skip() { skipped="$skipped $1"; printf '\n── skipped: %s — %s\n' "$1" "$2"; }
@@ -140,7 +145,7 @@ if wants pair; then
   say "   Waiting for the iPhone (one-time link, 10 minutes) …"
   wait "$pairpid" || { pairpid=""; cat "$work/pair.out" >&2; die "pairing did not finish"; }
   pairpid=""
-  sed -n '/^Paired /,$p' "$work/pair.out" | grep -v '^Next:' | sed 's/^/   /'
+  sed -n '/^Paired /,$p' "$work/pair.out" | grep -v '^Next:' | serials | sed 's/^/   /'
   ok "paired"
 fi
 paired || die "no phone is paired with this computer — run with --pair"
@@ -151,7 +156,7 @@ if wants dry-run; then
     "On the iPhone: the request appears — compare the code, enter the YubiKey's PIN, hold the key to the top of the iPhone."
   set -- test --note "KeyTap canary: dry run. PIN, tap and key agreement on the YubiKey — nothing is decrypted."
   [ -n "$key" ] && set -- "$@" --key "$key"
-  "$bridge" "$@" 2>&1 | tee "$work/test.out" | sed 's/^/   /' || true
+  "$bridge" "$@" 2>&1 | tee "$work/test.out" | serials | sed 's/^/   /' || true
   grep -q 'Dry run passed' "$work/test.out" || die "the dry run did not pass"
   ok "dry run passed"
 fi
