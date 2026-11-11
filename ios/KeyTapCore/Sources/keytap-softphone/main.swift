@@ -89,6 +89,7 @@ do {
             print("request \(req.code) from \(req.user)@\(req.host): \(req.command) [\(req.files.count) file(s)]")
             print("keys: \(req.offeredKeys.map { "\($0.label)=\($0.serial)" }.joined(separator: " ")) default \(req.defaultKey.map(String.init) ?? "-")")
             if let n = req.displayNote { print("note: \(n)") }
+            if let ssh = req.ssh { print("ssh key: \(ssh.keyName ?? "(no name) " + (ssh.keyFingerprint ?? "-"))") }
             if args.contains("--decline") {
                 try await client.send(try Approver.decline(req, requestBytes: bytes, signer: signer))
                 print("declined")

@@ -284,7 +284,17 @@ EOF
   # shellcheck disable=SC2046
   set -- $(cat "$work/ssh.opts")
   IFS=$oldifs
-  out=$(cd "$work" && KEYTAP_NOTE="KeyTap canary: SSH login to a throwaway sshd on this computer. Approve it." \
+  # discreet: the phone names the key by its fingerprint, not by the local file the bridge would find for
+  # it in ~/.ssh — the bridge gets an empty home for this one call, and everything it needs by full path
+  bhome=$HOME
+  if [ "$hide" = 1 ]; then
+    mkdir -p "$work/home"; bhome="$work/home"
+    if [ -f "$keysconf" ]; then sed "s|~/|$HOME/|g" "$keysconf" > "$work/keys.conf"; else : > "$work/keys.conf"; fi
+  fi
+  out=$(cd "$work" && if [ "$hide" = 1 ]; then
+      export HOME="$bhome" KEYTAP_BRIDGE="$bridge" KEYTAP_DIR="${KEYTAP_DIR:-$HOME/.secure/keytap}" \
+        KEYTAP_IDENTITIES="$identities" KEYTAP_KEYS="$work/keys.conf"; fi
+    KEYTAP_NOTE="KeyTap canary: SSH login to a throwaway sshd on this computer. Approve it." \
     SSH_ASKPASS="$work/askpass" SSH_ASKPASS_REQUIRE=force \
     "$ssh" -F /dev/null -p "$sshport" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=no \
     "$@" "$me@127.0.0.1" 'echo keytap-canary-logged-in' </dev/null 2>"$work/ssh.err") || {
