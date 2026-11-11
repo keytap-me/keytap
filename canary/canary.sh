@@ -64,7 +64,7 @@ step() { # step <name> <title> <what to do on the phone>
   if [ "$yes" = 0 ]; then printf '   Press Return to start … '; read -r _; fi
 }
 serials() { # the bridge's lines, without serial numbers when asked
-  if [ "$hide" = 1 ]; then sed -E 's/ \(YubiKey [0-9]+, slot [^)]*\)//; s/^( +[^ ]+) +[0-9]+$/\1/; s/ SHA256:[A-Za-z0-9+\/]+//'; else cat; fi
+  if [ "$hide" = 1 ]; then sed -E 's/ \(YubiKey [0-9]+, slot [^)]*\)//; s/^( +[^ ]+) +[0-9]+(, [0-9]+ ssh key\(s\))?$/\1\2/; s/ SHA256:[A-Za-z0-9+\/]+//'; else cat; fi
 }
 ok() { passed="$passed $current"; say "   ✓ $*"; }
 skip() { skipped="$skipped $1"; printf '\n── skipped: %s — %s\n' "$1" "$2"; }
