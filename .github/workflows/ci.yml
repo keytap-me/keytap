@@ -20,7 +20,7 @@ jobs:
           for t in darwin/arm64 darwin/amd64 linux/amd64 linux/arm64 windows/amd64 windows/arm64; do
             GOOS=${t%/*} GOARCH=${t#*/} CGO_ENABLED=0 go build -o /dev/null ./cmd/age-plugin-yubikey-phone
           done
-      - run: sh -n install/install.sh
+      - run: sh -n install/install.sh && sh -n canary/canary.sh
 
   # The iOS app: tests of KeyTapCore, then a Release build for devices without signing (signing needs
   # our Apple keys, which never come here). The built binary is then checked for the README's promise:

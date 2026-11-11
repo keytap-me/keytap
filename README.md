@@ -119,6 +119,23 @@ Add or drop a line and the next request carries the new list; nothing changes on
 run `pair` on each and paste each link into the app (Settings ▸ Add a Computer). Each request shows
 which computer asked.
 
+## Canary: the whole chain, once
+
+[`canary/canary.sh`](canary/canary.sh) runs everything above with the real things — this computer, your
+iPhone, your YubiKey — and says what to do on the phone at each step: pair, the dry run, an `age`
+decryption, a request you decline (it must fail), a `sops` decryption and an SSH login to a throwaway
+sshd on 127.0.0.1. Run it after installing or updating, or to show someone how KeyTap works.
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/keytap-me/keytap/main/canary/canary.sh -o canary.sh
+sh canary.sh --pair          # everything, starting with pairing; without --pair it uses the paired phone
+sh canary.sh decrypt ssh     # only these steps; --yes does not wait for Return between steps
+```
+
+Nothing real is touched: the files are made on the spot in a temp directory, encrypted to the recipients
+your identity file names, and deleted at the end; the sshd accepts only your key and is stopped at the
+end; no YubiKey slot is written. Steps whose tools are missing (sops, a FIDO2 key file) are skipped.
+
 ## SSH logins (FIDO2 keys on the YubiKey)
 
 SSH keys that live on the YubiKey — `ssh-keygen -t ed25519-sk -O resident -O verify-required`, made
