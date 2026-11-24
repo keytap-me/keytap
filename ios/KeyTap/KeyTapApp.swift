@@ -12,7 +12,11 @@ struct KeyTapApp: App {
         WindowGroup {
             @Bindable var model = model
             Group {
-                if model.isDemo || (model.setupDone && model.pairing != nil) {
+                if !model.loaded {
+                    // Started on a locked phone and not unlocked yet: nothing is known, so no setup wizard.
+                    ContentUnavailableView("iPhone Locked", systemImage: "lock",
+                                           description: Text("Unlock your iPhone to use KeyTap."))
+                } else if model.isDemo || (model.setupDone && model.pairing != nil) {
                     HomeView()
                 } else {
                     SetupWizard(incomingLink: $pendingLink)
@@ -27,6 +31,10 @@ struct KeyTapApp: App {
                 guard let link = PairingLink(url.absoluteString) else { return }
                 if model.setupDone { model.setupDone = false } // a new pairing link re-runs setup
                 pendingLink = link
+            }
+            .onReceive(NotificationCenter.default.publisher(for: UIApplication.protectedDataDidBecomeAvailableNotification)) { _ in
+                model.load()
+                if scenePhase == .active { model.startPolling() }
             }
             .onChange(of: scenePhase, initial: true) { _, phase in
                 if phase == .active {

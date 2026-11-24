@@ -24,6 +24,10 @@ struct Pairing: Codable, Equatable, Identifiable {
 final class AppModel {
     enum Link: Equatable { case unknown, waiting, notListening, error(String) }
 
+    /// The keychain and the settings were read. False while KeyTap was started on a locked phone (in the
+    /// background, by a push or by iOS prewarming it): the keychain is closed then, and `load` runs again
+    /// once the phone is unlocked. Until then nothing is known — in particular not "never set up".
+    private(set) var loaded = false
     /// Every paired computer, in pairing order.
     private(set) var pairings: [Pairing] = []
     /// The computer paired most recently (the setup wizard's dry run, the phone test's slot).
@@ -111,15 +115,7 @@ final class AppModel {
     var approvesInSoftware: Bool { useSoftwareKey || isDemo }
 
     init() {
-        // A fresh install (no setting of ours at all — an update keeps them) starts from a clean
-        // keychain: iOS keeps keychain items after an app is deleted.
-        let defaults = UserDefaults.standard
-        if defaults.object(forKey: "installed") == nil && defaults.object(forKey: "setupDone") == nil {
-            Keychain.wipeAll()
-        }
-        defaults.set(true, forKey: "installed")
-        pairings = Self.loadPairings()
-        if defaults.bool(forKey: "pushSyncPending") { pushPending = Set(pairings.map(\.id)) }
+        load()
         #if DEBUG
         useSoftwareKey = UserDefaults.standard.bool(forKey: "useSoftwareKey")
         // scripts/e2e-simulator.sh seeds a throwaway software key: -keytapSoftwareKey <base64 raw scalar>
@@ -131,10 +127,38 @@ final class AppModel {
         #endif
     }
 
+    /// Reads the pairings and the settings, once. At launch, and again on every return to the screen and when
+    /// the phone is unlocked, until it worked: the process iOS started on a locked phone stays alive and is
+    /// the one the user opens later.
+    func load() {
+        guard !loaded else { return }
+        let defaults = UserDefaults.standard
+        do {
+            // A fresh install (no setting of ours at all — an update keeps them) starts from a clean
+            // keychain: iOS keeps keychain items after an app is deleted. Only with the keychain open:
+            // before the first unlock after a restart the settings cannot be read either, and an
+            // installed app would look fresh.
+            if defaults.object(forKey: "installed") == nil && defaults.object(forKey: "setupDone") == nil {
+                _ = try Keychain.read("pairings")
+                _ = try Keychain.read("pairing")
+                Keychain.wipeAll()
+            }
+            pairings = try Self.loadPairings()
+        } catch {
+            return
+        }
+        defaults.set(true, forKey: "installed")
+        // what the property defaults read at launch may have been read behind the lock as well
+        setupDone = defaults.bool(forKey: "setupDone")
+        notificationsWanted = defaults.bool(forKey: "notificationsWanted")
+        if defaults.bool(forKey: "pushSyncPending") { pushPending = Set(pairings.map(\.id)) }
+        loaded = true
+    }
+
     /// The pairings from the keychain. A phone from KeyTap 1.0 had one pairing under "pairing" with its token
     /// under "bridge-token" (and its notification key under "notify-key"): moved to the per-computer layout once.
-    private static func loadPairings() -> [Pairing] {
-        if let d = Keychain.get("pairings"), let list = try? JSONDecoder().decode([Pairing].self, from: d) {
+    private static func loadPairings() throws -> [Pairing] {
+        if let d = try Keychain.read("pairings"), let list = try? JSONDecoder().decode([Pairing].self, from: d) {
             // KeyTap 1.1 stores no YubiKey list: rewrite a 1.0 / early-1.1 entry without it (keys, recipient).
             let raw = String(decoding: d, as: UTF8.self)
             if raw.contains("\"keys\"") || raw.contains("\"recipient\""), let clean = try? JSONEncoder().encode(list) {
@@ -142,7 +166,7 @@ final class AppModel {
             }
             return list
         }
-        guard let d = Keychain.get("pairing"), let p = try? JSONDecoder().decode(Pairing.self, from: d) else { return [] }
+        guard let d = try Keychain.read("pairing"), let p = try? JSONDecoder().decode(Pairing.self, from: d) else { return [] }
         if let tok = Keychain.get("bridge-token") { Keychain.set(p.tokenAccount, tok) }
         SharedKeychain.migrateLegacyNotifyKey(to: p.id)
         guard Keychain.set("pairings", (try? JSONEncoder().encode([p])) ?? Data()) else { return [p] }
@@ -272,6 +296,7 @@ final class AppModel {
     // MARK: polling — foreground only; the bridge's endpoint exists only while a decrypt waits
 
     func startPolling() {
+        load()
         guard pollTask == nil, !pairings.isEmpty, !isDemo else { return }
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
@@ -649,7 +674,13 @@ final class AppModel {
 
 enum KeychainError: Error, LocalizedError {
     case writeFailed
-    var errorDescription: String? { "Could not store the key in the keychain." }
+    case locked
+    var errorDescription: String? {
+        switch self {
+        case .writeFailed: "Could not store the key in the keychain."
+        case .locked: "The keychain is locked. Unlock the iPhone and try again."
+        }
+    }
 }
 
 /// Debug-only software key, so the full flow runs in the simulator.

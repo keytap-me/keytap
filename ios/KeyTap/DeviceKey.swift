@@ -16,9 +16,10 @@ enum DeviceKey {
 
     static var isHardwareBacked: Bool { SecureEnclave.isAvailable }
 
-    /// The existing key, or a new one.
+    /// The existing key, or a new one. Throws while the keychain is locked: an existing key that cannot be
+    /// read right now must not be replaced by a new one.
     static func load(createIfMissing: Bool = true) throws -> DeviceSigner? {
-        if let stored = Keychain.get(account) {
+        if let stored = try Keychain.read(account) {
             if SecureEnclave.isAvailable {
                 return SecureEnclaveSigner(key: try .init(dataRepresentation: stored))
             }

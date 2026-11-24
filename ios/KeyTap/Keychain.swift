@@ -6,7 +6,10 @@ import Security
 enum Keychain {
     static let service = "me.keytap.app"
 
-    static func get(_ account: String) -> Data? {
+    /// nil only if there is no such item. Throws while the item exists but cannot be read: iOS starts KeyTap
+    /// in the background on a locked phone (a push, prewarming), and the keychain opens only with the unlock.
+    /// "Locked" must never be taken for "empty" — that looks like a phone that was never set up.
+    static func read(_ account: String) throws -> Data? {
         var out: CFTypeRef?
         let q: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
@@ -14,8 +17,14 @@ enum Keychain {
             kSecAttrAccount as String: account,
             kSecReturnData as String: true,
         ]
-        return SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess ? out as? Data : nil
+        switch SecItemCopyMatching(q as CFDictionary, &out) {
+        case errSecSuccess: return out as? Data
+        case errSecItemNotFound: return nil
+        default: throw KeychainError.locked
+        }
     }
+
+    static func get(_ account: String) -> Data? { try? read(account) }
 
     @discardableResult
     static func set(_ account: String, _ data: Data) -> Bool {
